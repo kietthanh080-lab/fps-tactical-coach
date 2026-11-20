@@ -18,11 +18,23 @@ import { generateMatchReport } from '../engine/aiCoach';
 const router = Router();
 const MAX_STORED_MATCHES = 20;
 
-const HIGHLIGHT_UPLOAD_DIR = path.join(__dirname, '../../uploads/highlights');
-fs.mkdirSync(HIGHLIGHT_UPLOAD_DIR, { recursive: true });
+const HIGHLIGHT_UPLOAD_DIR = process.env.VERCEL
+  ? '/tmp/uploads/highlights'
+  : path.join(__dirname, '../../uploads/highlights');
+
+try {
+  if (!fs.existsSync(HIGHLIGHT_UPLOAD_DIR)) {
+    fs.mkdirSync(HIGHLIGHT_UPLOAD_DIR, { recursive: true });
+  }
+} catch (err) {
+  console.warn('Không thể tạo sẵn thư mục upload khi khởi động:', err);
+}
 
 const highlightStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
+    if (!fs.existsSync(HIGHLIGHT_UPLOAD_DIR)) {
+      fs.mkdirSync(HIGHLIGHT_UPLOAD_DIR, { recursive: true });
+    }
     cb(null, HIGHLIGHT_UPLOAD_DIR);
   },
   filename: (req, file, cb) => {
@@ -358,10 +370,10 @@ router.post('/match', authenticateToken, async (req: AuthRequest, res: Response)
       }
     }
 
-    if (roundsToAnalyze.length === 0 && Array.isArray(localEvents) && localEvents.length > 0) 
-    {
-        roundsToAnalyze = buildRoundsFromLocalEvents(localEvents as TimelineEventInput[]);
+    if (roundsToAnalyze.length === 0 && Array.isArray(localEvents) && localEvents.length > 0) {
+      roundsToAnalyze = buildRoundsFromLocalEvents(localEvents as TimelineEventInput[]);
     }
+
     const analyzedRounds = roundsToAnalyze.map((r) => analyzeRoundTactics(r, gameType));
     const report = await generateMatchReport(gameType, mapName, analyzedRounds);
 
@@ -576,7 +588,6 @@ router.post('/pubg/sync', authenticateToken, async (req: AuthRequest, res: Respo
 
     const candidateIds = recentMatchRefs.slice(0, MAX_STORED_MATCHES).map((m) => m.id);
 
-    // Chỉ bỏ qua các trận đã có sẵn VÀ đã có dữ liệu vũ khí (weapon_stats_json)
     const [existingRows] = await dbPool.query<RowDataPacket[]>(
       `SELECT DISTINCT m.match_id
        FROM matches m
