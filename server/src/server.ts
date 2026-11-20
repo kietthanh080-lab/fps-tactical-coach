@@ -5,6 +5,7 @@ import path from 'path';
 import { testDatabaseConnection } from './config/db';
 import authRoutes from './routes/auth';
 import analyzeRoutes from './routes/analyze';
+import legalRouter from './routes/legal';
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/analyze', analyzeRoutes);
+app.use('/', legalRouter);
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {

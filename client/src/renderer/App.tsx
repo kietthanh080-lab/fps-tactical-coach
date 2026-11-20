@@ -40,6 +40,58 @@ interface SavedMatchItem {
   played_at: string;
 }
 
+const UpdateBanner: React.FC = () => {
+  const [updateState, setUpdateState] = useState<{
+    status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
+    version?: string;
+    percent?: number;
+  }>({ status: 'idle' });
+
+  useEffect(() => {
+    const updater = (window as any).electronUpdater;
+    if (!updater?.onUpdateStatus) return;
+    return updater.onUpdateStatus((data: any) => setUpdateState(data));
+  }, []);
+
+  if (updateState.status === 'idle' || updateState.status === 'error') return null;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 bg-slate-900 border border-emerald-500/40 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+      {updateState.status === 'available' && (
+        <>
+          <span className="text-xs sm:text-sm">
+            Có phiên bản mới <b className="text-emerald-400">v{updateState.version}</b>!
+          </span>
+          <button
+            onClick={() => (window as any).electronUpdater?.downloadUpdate()}
+            className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition"
+          >
+            Cập nhật ngay
+          </button>
+        </>
+      )}
+
+      {updateState.status === 'downloading' && (
+        <span className="text-xs sm:text-sm text-sky-300">
+          Đang tải bản cập nhật... <b>{updateState.percent ?? 0}%</b>
+        </span>
+      )}
+
+      {updateState.status === 'downloaded' && (
+        <>
+          <span className="text-xs sm:text-sm">Tải hoàn tất!</span>
+          <button
+            onClick={() => (window as any).electronUpdater?.installUpdate()}
+            className="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition"
+          >
+            Khởi động lại để áp dụng
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [token, setTokenState] = useState<string | null>(() => getAuthToken());
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -223,21 +275,21 @@ const App: React.FC = () => {
     }
   };
 
-const handleSteamLogin = () => {
-  const isDesktopApp = window.location.protocol === 'file:';
-  const returnTo = isDesktopApp
-    ? 'electron'
-    : encodeURIComponent(window.location.href.split('?')[0]);
-  window.location.href = `${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`;
-};
+  const handleSteamLogin = () => {
+    const isDesktopApp = window.location.protocol === 'file:';
+    const returnTo = isDesktopApp
+      ? 'electron'
+      : encodeURIComponent(window.location.href.split('?')[0]);
+    window.location.href = `${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`;
+  };
 
-const handleRiotLogin = () => {
-  const isDesktopApp = window.location.protocol === 'file:';
-  const returnTo = isDesktopApp
-    ? 'electron'
-    : encodeURIComponent(window.location.href.split('?')[0]);
-  window.location.href = `${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`;
-};
+  const handleRiotLogin = () => {
+    const isDesktopApp = window.location.protocol === 'file:';
+    const returnTo = isDesktopApp
+      ? 'electron'
+      : encodeURIComponent(window.location.href.split('?')[0]);
+    window.location.href = `${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`;
+  };
 
   const handleSyncPubg = async () => {
     setSyncingPubg(true);
@@ -473,6 +525,8 @@ const handleRiotLogin = () => {
             </div>
           </div>
         </main>
+
+        <UpdateBanner />
       </div>
     );
   }
@@ -696,6 +750,8 @@ const handleRiotLogin = () => {
           />
         </aside>
       </main>
+
+      <UpdateBanner />
     </div>
   );
 };

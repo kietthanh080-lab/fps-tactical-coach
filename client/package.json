@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "desktop:run": "npm run build && electron .",
-    "desktop:build": "npm run build && electron-builder --win portable"
+    "desktop:build": "npm run build && electron-builder --win nsis",
+    "desktop:publish": "npm run build && electron-builder --win nsis --publish always"
   },
   "build": {
     "appId": "com.tacticalreplay.ai",
@@ -21,10 +22,24 @@
     ],
     "win": {
       "icon": "public/launcher_icon.ico",
-      "target": "portable"
-    }
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "kietthanh080-lab",
+        "repo": "tactical-replay-releases"
+      }
+    ]
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
