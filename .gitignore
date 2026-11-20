@@ -1,0 +1,10 @@
+# Thư mục thư viện & bản build nặng
+node_modules/
+dist/
+release/
+uploads/
+
+# File chứa mật khẩu & API Key bảo mật
+.env
+.env.*
+*.log

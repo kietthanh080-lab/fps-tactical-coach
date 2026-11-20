@@ -1,0 +1,303 @@
+import https from 'https';
+import { Router, Request, Response, NextFunction } from 'express';
+import axios from 'axios';
+import jwt from 'jsonwebtoken';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { dbPool } from '../config/db';
+
+const router = Router();
+const JWT_SECRET = process.env.JWT_SECRET || 'tactical_replay_secret';
+const steamHttpsAgent = new https.Agent({ family: 4 });
+
+export interface AuthRequest extends Request {
+  user?: { userId: number; puuid?: string; steamId?: string };
+}
+
+function getDefaultClientUrl(): string {
+  const origin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+  return `${origin}/public/index.html`;
+}
+
+function isSafeRedirectTarget(target: string): boolean {
+  return (
+    target === 'electron' ||
+    target.startsWith('http://localhost:') ||
+    target.startsWith('http://127.0.0.1:') ||
+    (Boolean(process.env.CLIENT_ORIGIN) && target.startsWith(process.env.CLIENT_ORIGIN!))
+  );
+}
+
+router.get('/desktop-callback', (_req: Request, res: Response) => {
+  res.send(
+    '<body style="background:#020617;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><h3>Đăng nhập thành công! Đang quay lại TacticalReplayAI...</h3></body>'
+  );
+});
+
+export function authenticateToken(req: AuthRequest, res: Response, next: NextFunction): void {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    res.status(401).json({ error: 'Vui lòng đăng nhập để xem video của bạn.' });
+    return;
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      res.status(403).json({ error: 'Phiên đăng nhập hết hạn, vui lòng đăng nhập lại.' });
+      return;
+    }
+    req.user = decoded as { userId: number; puuid?: string; steamId?: string };
+    next();
+  });
+}
+
+// ============================================================================
+// 1. ĐĂNG NHẬP BẰNG STEAM (STEAM OPENID 2.0)
+// ============================================================================
+router.get('/steam/login', (req: Request, res: Response) => {
+  const serverOrigin = `${req.protocol}://${req.get('host')}`;
+  const rawReturnTo = String(req.query.returnTo || '');
+  const clientReturnTo = isSafeRedirectTarget(rawReturnTo) ? rawReturnTo : getDefaultClientUrl();
+
+  const callbackUrl = `${serverOrigin}/api/auth/steam/callback?returnTo=${encodeURIComponent(
+    clientReturnTo
+  )}`;
+
+  const params = new URLSearchParams({
+    'openid.ns': 'http://specs.openid.net/auth/2.0',
+    'openid.mode': 'checkid_setup',
+    'openid.return_to': callbackUrl,
+    'openid.realm': serverOrigin,
+    'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
+    'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+  });
+
+  res.redirect(`https://steamcommunity.com/openid/login?${params.toString()}`);
+});
+
+router.get('/steam/callback', async (req: Request, res: Response) => {
+  try {
+    const verifyParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.query)) {
+      if (key.startsWith('openid.') && typeof value === 'string') {
+        verifyParams.append(key, value);
+      }
+    }
+    verifyParams.set('openid.mode', 'check_authentication');
+
+    const verifyRes = await axios.post(
+      'https://steamcommunity.com/openid/login',
+      verifyParams.toString(),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        httpsAgent: steamHttpsAgent,
+        timeout: 10000,
+      }
+    );
+
+    const isValid =
+      typeof verifyRes.data === 'string' && verifyRes.data.includes('is_valid:true');
+
+    if (!isValid) {
+      res.status(401).json({
+        error: 'Mã xác thực Steam đã hết hạn hoặc không hợp lệ. Vui lòng quay lại trang chủ và bấm đăng nhập lại.',
+      });
+      return;
+    }
+
+    const claimedId = String(req.query['openid.claimed_id'] || '');
+    const idMatch = claimedId.match(/^https?:\/\/steamcommunity\.com\/openid\/id\/(\d+)$/);
+    const steamId = idMatch ? idMatch[1] : null;
+
+    if (!steamId) {
+      res.status(400).json({ error: 'Không lấy được SteamID từ phản hồi.' });
+      return;
+    }
+
+    let personaName = `Steam_${steamId.slice(-5)}`;
+    let avatarUrl = '';
+    try {
+      const profileXmlRes = await axios.get(
+        `https://steamcommunity.com/profiles/${steamId}/?xml=1`,
+        { httpsAgent: steamHttpsAgent, timeout: 6000 }
+      );
+      const xml = String(profileXmlRes.data || '');
+      const nameMatch = xml.match(/<steamID><!\[CDATA\[(.*?)\]\]><\/steamID>/);
+      const avatarMatch = xml.match(/<avatarFull><!\[CDATA\[(.*?)\]\]><\/avatarFull>/);
+      if (nameMatch?.[1]) personaName = nameMatch[1];
+      if (avatarMatch?.[1]) avatarUrl = avatarMatch[1];
+    } catch {
+      // Bỏ qua nếu hồ sơ Steam đặt ở chế độ riêng tư
+    }
+
+    await dbPool.query<ResultSetHeader>(
+      `INSERT INTO users (steam_id, steam_persona_name, steam_avatar)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         steam_persona_name = VALUES(steam_persona_name),
+         steam_avatar = VALUES(steam_avatar)`,
+      [steamId, personaName, avatarUrl]
+    );
+
+    const [rows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT id FROM users WHERE steam_id = ?',
+      [steamId]
+    );
+    const userId = rows[0].id;
+
+    const appToken = jwt.sign({ userId, steamId }, JWT_SECRET, { expiresIn: '30d' });
+    const rawReturnTo = String(req.query.returnTo || '');
+    const redirectTarget = isSafeRedirectTarget(rawReturnTo) ? rawReturnTo : getDefaultClientUrl();
+    const serverOrigin = `${req.protocol}://${req.get('host')}`;
+
+    if (redirectTarget === 'electron') {
+      res.redirect(`${serverOrigin}/api/auth/desktop-callback?token=${appToken}`);
+      return;
+    }
+
+    const separator = redirectTarget.includes('?') ? '&' : '?';
+    res.redirect(`${redirectTarget}${separator}token=${appToken}`);
+  } catch (error: any) {
+    console.error('Lỗi xác thực Steam OpenID:', error);
+    res.status(500).json({
+      error: 'Không thể đăng nhập bằng tài khoản Steam.',
+      detail: error?.message || String(error),
+    });
+  }
+});
+
+// ============================================================================
+// 2. ĐĂNG NHẬP BẰNG RIOT SIGN ON (RSO)
+// ============================================================================
+router.get('/riot/login', (req: Request, res: Response) => {
+  const clientId = process.env.RIOT_CLIENT_ID;
+  const redirectUri = encodeURIComponent(process.env.RIOT_REDIRECT_URI || '');
+  const rawReturnTo = String(req.query.returnTo || '');
+  const clientReturnTo = isSafeRedirectTarget(rawReturnTo) ? rawReturnTo : getDefaultClientUrl();
+  const state = Buffer.from(clientReturnTo, 'utf8').toString('base64url');
+
+  const authorizeUrl = `https://auth.riotgames.com/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=openid+offline_access&state=${encodeURIComponent(
+    state
+  )}`;
+
+  res.redirect(authorizeUrl);
+});
+
+router.get('/riot/callback', async (req: Request, res: Response) => {
+  const { code, state } = req.query;
+  if (!code) {
+    res.status(400).json({ error: 'Thiếu mã xác thực từ Riot.' });
+    return;
+  }
+
+  try {
+    const basicAuth = Buffer.from(
+      `${process.env.RIOT_CLIENT_ID}:${process.env.RIOT_CLIENT_SECRET}`
+    ).toString('base64');
+
+    const tokenRes = await axios.post(
+      'https://auth.riotgames.com/token',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: String(code),
+        redirect_uri: process.env.RIOT_REDIRECT_URI || '',
+      }),
+      {
+        headers: {
+          Authorization: `Basic ${basicAuth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      }
+    );
+
+    const { access_token, refresh_token } = tokenRes.data;
+
+    const accountRes = await axios.get(
+      'https://asia.api.riotgames.com/riot/account/v1/accounts/me',
+      { headers: { Authorization: `Bearer ${access_token}` } }
+    );
+
+    const { puuid, gameName, tagLine } = accountRes.data;
+
+    await dbPool.query<ResultSetHeader>(
+      `INSERT INTO users (riot_puuid, riot_game_name, riot_tag_line, riot_access_token, riot_refresh_token)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         riot_game_name = VALUES(riot_game_name),
+         riot_tag_line = VALUES(riot_tag_line),
+         riot_access_token = VALUES(riot_access_token),
+         riot_refresh_token = VALUES(riot_refresh_token)`,
+      [puuid, gameName, tagLine, access_token, refresh_token]
+    );
+
+    const [rows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT id FROM users WHERE riot_puuid = ?',
+      [puuid]
+    );
+    const userId = rows[0].id;
+
+    const appToken = jwt.sign({ userId, puuid }, JWT_SECRET, { expiresIn: '30d' });
+
+    let decodedReturnTo = '';
+    if (typeof state === 'string' && state) {
+      try {
+        decodedReturnTo = Buffer.from(state, 'base64url').toString('utf8');
+      } catch {
+        decodedReturnTo = '';
+      }
+    }
+
+    const redirectTarget = isSafeRedirectTarget(decodedReturnTo)
+      ? decodedReturnTo
+      : getDefaultClientUrl();
+    const serverOrigin = `${req.protocol}://${req.get('host')}`;
+
+    if (redirectTarget === 'electron') {
+      res.redirect(`${serverOrigin}/api/auth/desktop-callback?token=${appToken}`);
+      return;
+    }
+
+    const separator = redirectTarget.includes('?') ? '&' : '?';
+    res.redirect(`${redirectTarget}${separator}token=${appToken}`);
+  } catch (error) {
+    console.error('Lỗi xác thực RSO:', error);
+    res.status(500).json({ error: 'Không thể đăng nhập bằng tài khoản Riot.' });
+  }
+});
+
+// ============================================================================
+// 3. LẤY HỒ SƠ & DANH SÁCH TRẬN ĐẤU / VIDEO CỦA NGƯỜI DÙNG
+// ============================================================================
+router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+
+  try {
+    const [users] = await dbPool.query<RowDataPacket[]>(
+      `SELECT id, riot_game_name, riot_tag_line,
+              steam_id, steam_persona_name, steam_avatar,
+              pubg_account_id, pubg_player_name
+       FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    const [matches] = await dbPool.query<RowDataPacket[]>(
+      `SELECT match_id, game_type, map_name, game_mode, match_result,
+              score_summary, local_video_filename, cloud_video_url, duration_sec, played_at
+       FROM matches
+       WHERE user_id = ?
+       ORDER BY played_at DESC`,
+      [userId]
+    );
+
+    res.json({
+      profile: users[0] || null,
+      videos: matches,
+    });
+  } catch (error) {
+    console.error('Lỗi lấy danh sách video:', error);
+    res.status(500).json({ error: 'Không thể tải danh sách video.' });
+  }
+});
+
+export default router;
