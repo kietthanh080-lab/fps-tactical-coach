@@ -23,7 +23,10 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/analyze', analyzeRoutes);
 
-app.listen(PORT, async () => {
-  await testDatabaseConnection();
-  console.log(`Server đang chạy tại http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server đang chạy tại http://localhost:${PORT}`);
+  });
+}
+
+export default app;
