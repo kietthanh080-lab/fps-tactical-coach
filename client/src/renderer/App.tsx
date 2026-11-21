@@ -744,6 +744,8 @@ const App: React.FC = () => {
         <aside className="col-span-3">
           <TacticalReport
             gameType={activeGameTab}
+            matchId={activeMatch?.match_id || null}
+            mapName={activeMatch?.map_name || ''}
             activeRound={activeRound}
             report={report}
             rounds={rounds}

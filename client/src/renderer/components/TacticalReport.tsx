@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnalyzedRoundUI, WeaponUsageStatUI } from './RoundTimeline';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
 
 export interface MatchReportUI {
   overallScore: number;
@@ -11,9 +13,17 @@ export interface MatchReportUI {
 
 interface TacticalReportProps {
   gameType: 'VALORANT' | 'PUBG';
+  matchId?: string | null;
+  mapName?: string;
   activeRound: AnalyzedRoundUI | undefined;
   rounds?: AnalyzedRoundUI[];
   report: MatchReportUI | null;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 const CATEGORY_BADGE_STYLES: Record<WeaponUsageStatUI['category'], string> = {
@@ -28,18 +38,50 @@ const CATEGORY_BADGE_STYLES: Record<WeaponUsageStatUI['category'], string> = {
   Other: 'bg-slate-800 text-slate-300 border-slate-700',
 };
 
+const QUICK_PROMPTS: Record<'VALORANT' | 'PUBG', string[]> = {
+  VALORANT: [
+    'Tại sao mình hay thua các round Force Buy?',
+    'Phân tích lỗi vị trí ở Round đang chọn',
+    'Đánh giá hiệu quả chọn súng & headshot trận này',
+  ],
+  PUBG: [
+    'Cách di chuyển vào bo cuối an toàn hơn?',
+    'Phân tích giai đoạn vòng bo mình bị hạ gục',
+    'Đánh giá bộ vũ khí & sát thương trận này',
+  ],
+};
+
 export const TacticalReport: React.FC<TacticalReportProps> = ({
   gameType,
+  matchId = null,
+  mapName = '',
   activeRound,
   rounds = [],
   report,
 }) => {
-  const [activeTab, setActiveTab] = useState<'ROUND' | 'MATCH'>('ROUND');
+  const [activeTab, setActiveTab] = useState<'ROUND' | 'MATCH' | 'CHAT'>('ROUND');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [questionInput, setQuestionInput] = useState('');
+  const [sendingChat, setSendingChat] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
   const isValo = gameType === 'VALORANT';
 
   const activeTabStyle = isValo
     ? 'bg-[#ff4655] text-white'
     : 'bg-amber-500 text-slate-950';
+
+  // Làm mới lịch sử trò chuyện khi chuyển sang trận đấu khác
+  useEffect(() => {
+    setMessages([]);
+    setQuestionInput('');
+  }, [matchId]);
+
+  useEffect(() => {
+    if (activeTab === 'CHAT') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, activeTab]);
 
   // Tổng hợp vũ khí sử dụng xuyên suốt toàn bộ trận đấu cho tab AI Coach
   const matchWeaponSummary = useMemo(() => {
@@ -67,36 +109,115 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
     );
   }, [rounds]);
 
+  const handleAskCoach = async (rawQuestion: string) => {
+    const trimmed = rawQuestion.trim();
+    if (!trimmed || sendingChat) return;
+
+    const userMsg: ChatMessage = {
+      id: `u-${Date.now()}`,
+      role: 'user',
+      content: trimmed,
+    };
+
+    const updatedHistory = [...messages, userMsg];
+    setMessages(updatedHistory);
+    setQuestionInput('');
+    setSendingChat(true);
+
+    try {
+      const storedToken =
+        localStorage.getItem('tactical_replay_token') || localStorage.getItem('token') || '';
+
+      const res = await fetch(`${API_BASE_URL}/analyze/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(storedToken ? { Authorization: `Bearer ${storedToken}` } : {}),
+        },
+        body: JSON.stringify({
+          matchId,
+          gameType,
+          mapName,
+          question: trimmed,
+          activeRound,
+          rounds,
+          report,
+          history: messages.slice(-6).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
+
+      const data = await res.json();
+      const replyText = res.ok
+        ? data.reply
+        : data.error || 'Không thể kết nối tới AI Coach lúc này.';
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          content: replyText,
+        },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `e-${Date.now()}`,
+          role: 'assistant',
+          content: 'Lỗi kết nối mạng tới máy chủ AI Coach. Vui lòng thử lại.',
+        },
+      ]);
+    } finally {
+      setSendingChat(false);
+    }
+  };
+
   const roundWeapons = activeRound?.weaponStats || [];
   const maxRoundWeaponDmg = Math.max(1, ...roundWeapons.map((w) => w.damageDealt));
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 flex flex-col gap-4 h-full">
-      <div className="grid grid-cols-2 gap-2 p-1 rounded-lg bg-slate-950 border border-slate-800">
+      {/* Thanh chuyển 3 tab: Chi tiết Round | Tổng kết | Hỏi AI Coach */}
+      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-950 border border-slate-800">
         <button
           onClick={() => setActiveTab('ROUND')}
-          className={`py-1.5 rounded-md text-xs font-bold transition ${
+          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
             activeTab === 'ROUND'
               ? activeTabStyle
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
           {isValo
-            ? `Chi tiết Round ${activeRound ? `#${activeRound.roundNumber}` : ''}`
-            : `Vòng bo ${activeRound ? `Phase ${activeRound.roundNumber}` : ''}`}
+            ? `Round ${activeRound ? `#${activeRound.roundNumber}` : ''}`
+            : `Bo ${activeRound ? `P${activeRound.roundNumber}` : ''}`}
         </button>
         <button
           onClick={() => setActiveTab('MATCH')}
-          className={`py-1.5 rounded-md text-xs font-bold transition ${
+          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
             activeTab === 'MATCH'
               ? activeTabStyle
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          Tổng kết AI Coach
+          Tổng kết
+        </button>
+        <button
+          onClick={() => setActiveTab('CHAT')}
+          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
+            activeTab === 'CHAT'
+              ? activeTabStyle
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Hỏi AI Coach
         </button>
       </div>
 
+      {/* TAB 1: CHI TIẾT TỪNG ROUND / VÒNG BO */}
       {activeTab === 'ROUND' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[78vh] pr-1">
           {!activeRound ? (
@@ -137,7 +258,6 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 </span>
               </div>
 
-              {/* Khối Vũ khí & Trang bị sử dụng trong giai đoạn / round */}
               <div className="space-y-2">
                 <h4 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">
                   {isValo ? 'Vũ khí trang bị trong Round' : `Vũ khí sử dụng ở Phase ${activeRound.roundNumber}`}
@@ -271,6 +391,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
+      {/* TAB 2: TỔNG KẾT AI COACH */}
       {activeTab === 'MATCH' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[78vh] pr-1">
           {!report ? (
@@ -360,6 +481,95 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   </ul>
                 </div>
               )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: HỎI ĐÁP CHIẾN THUẬT TRỰC TIẾP VỚI AI COACH */}
+      {activeTab === 'CHAT' && (
+        <div className="flex flex-col flex-1 min-h-[65vh] max-h-[78vh] justify-between gap-3">
+          {!matchId ? (
+            <p className="text-xs text-slate-500">
+              Chọn một trận đấu ở danh sách bên trái để bắt đầu hỏi đáp chiến thuật với AI Coach.
+            </p>
+          ) : (
+            <>
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+                {messages.length === 0 ? (
+                  <div className="space-y-3">
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 leading-relaxed">
+                      AI Coach đã đọc dữ liệu <strong className="text-white">{rounds.length}</strong>{' '}
+                      {isValo ? 'round' : 'giai đoạn vòng bo'} của trận{' '}
+                      <strong className="text-white">{mapName || gameType}</strong>. Bạn muốn mổ xẻ tình huống nào?
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] font-semibold text-slate-500">Gợi ý câu hỏi nhanh:</p>
+                      {QUICK_PROMPTS[gameType].map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => void handleAskCoach(prompt)}
+                          className="w-full text-left p-2.5 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 transition"
+                        >
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`p-3 rounded-xl text-xs leading-relaxed whitespace-pre-line ${
+                        m.role === 'user'
+                          ? isValo
+                            ? 'bg-[#ff4655]/20 border border-[#ff4655]/40 text-white ml-4'
+                            : 'bg-amber-500/20 border border-amber-500/40 text-amber-100 ml-4'
+                          : 'bg-slate-950 border border-slate-800 text-slate-200 mr-2'
+                      }`}
+                    >
+                      {m.content}
+                    </div>
+                  ))
+                )}
+
+                {sendingChat && (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-400 italic">
+                    AI Coach đang phân tích dữ liệu trận đấu...
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleAskCoach(questionInput);
+                }}
+                className="flex gap-2 pt-2 border-t border-slate-800"
+              >
+                <input
+                  type="text"
+                  value={questionInput}
+                  onChange={(e) => setQuestionInput(e.target.value)}
+                  placeholder="Hỏi về cách bắn, chọn súng, di chuyển..."
+                  disabled={sendingChat}
+                  className="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-slate-600"
+                />
+                <button
+                  type="submit"
+                  disabled={sendingChat || !questionInput.trim()}
+                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-40 ${
+                    isValo
+                      ? 'bg-[#ff4655] hover:bg-rose-500 text-white'
+                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                  }`}
+                >
+                  Gửi
+                </button>
+              </form>
             </>
           )}
         </div>

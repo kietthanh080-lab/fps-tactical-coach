@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Response, Request } from 'express';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
@@ -911,6 +911,108 @@ router.get('/player-search', async (req, res: Response) => {
     }
     console.error('Lỗi tra cứu nhân vật:', error);
     res.status(500).json({ error: 'Không thể tra cứu thông tin nhân vật lúc này.' });
+  }
+});
+
+// POST /api/analyze/chat — Hỏi đáp chiến thuật với AI Coach dựa trên dữ liệu trận đấu
+router.post('/chat', async (req: Request, res: Response) => {
+  try {
+    const {
+      gameType = 'VALORANT',
+      mapName = 'Unknown Map',
+      question,
+      activeRound,
+      rounds = [],
+      report = null,
+      history = [],
+    } = req.body || {};
+
+    if (!question || typeof question !== 'string' || !question.trim()) {
+      res.status(400).json({ error: 'Vui lòng nhập câu hỏi chiến thuật.' });
+      return;
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: 'Máy chủ chưa cấu hình GEMINI_API_KEY.' });
+      return;
+    }
+
+    // Rút gọn dữ liệu trận đấu để gửi ngữ cảnh chính xác và tiết kiệm token
+    const compactRounds = Array.isArray(rounds)
+      ? rounds.slice(0, 30).map((r: any) => ({
+          round: r.roundNumber,
+          result: r.result,
+          kda: `${r.kills}/${r.deaths}/${r.assists}`,
+          dmg: r.damageDealt,
+          economy: r.economyType,
+          style: r.tacticalStyle,
+          weapons: Array.isArray(r.weaponStats)
+            ? r.weaponStats.map((w: any) => `${w.weaponName}(${w.kills}K,${w.damageDealt}DMG)`).join(', ')
+            : '',
+          mistakes: r.mistakes || [],
+        }))
+      : [];
+
+    const systemPrompt = `Bạn là huấn luyện viên chiến thuật eSports chuyên sâu tựa game ${gameType}.
+Nhiệm vụ: Trả lời câu hỏi của người chơi bằng tiếng Việt ngắn gọn, thực chiến, đi thẳng vào nguyên nhân và cách khắc phục dựa trên DỮ LIỆU TRẬN ĐẤU thực tế dưới đây.
+Quy tắc:
+- Luôn dẫn chứng cụ thể số Round / Phase, tên vũ khí, lượng sát thương hoặc lỗi vị trí có trong dữ liệu.
+- Không chào hỏi rườm rà, không nói chung chung lý thuyết suông. Trình bày bằng gạch đầu dòng súc tích (tối đa 180 từ).
+
+THÔNG TIN TRẬN ĐẤU:
+- Game: ${gameType} | Bản đồ: ${mapName}
+- Đánh giá tổng quan: ${report ? JSON.stringify(report) : 'Chưa có báo cáo tổng'}
+- Round/Phase đang chọn xem: ${activeRound ? JSON.stringify(activeRound) : 'Chưa chọn'}
+- Diễn biến toàn trận: ${JSON.stringify(compactRounds)}`;
+
+    const conversationContents = [
+      ...(Array.isArray(history)
+        ? history.slice(-6).map((msg: any) => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: String(msg.content || '') }],
+          }))
+        : []),
+      {
+        role: 'user',
+        parts: [{ text: question.trim() }],
+      },
+    ];
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemPrompt }],
+          },
+          contents: conversationContents,
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 600,
+          },
+        }),
+      }
+    );
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      console.error('Gemini API error:', errText);
+      res.status(502).json({ error: 'AI Coach đang bận, vui lòng thử lại sau vài giây.' });
+      return;
+    }
+
+    const data = (await geminiRes.json()) as any;
+    const reply =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+      'Chưa đủ dữ liệu chi tiết ở trận này để đưa ra nhận định cụ thể.';
+
+    res.json({ reply });
+  } catch (error: any) {
+    console.error('Lỗi /api/analyze/chat:', error);
+    res.status(500).json({ error: 'Lỗi xử lý câu hỏi với AI Coach.' });
   }
 });
 
