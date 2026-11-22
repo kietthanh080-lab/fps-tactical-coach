@@ -1,15 +1,37 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import {
+  ArrowRight,
+  ArrowsClockwise,
+  Broadcast,
+  Crosshair,
+  LinkSimple,
+  MagnifyingGlass,
+  ShareNetwork,
+  ShieldCheck,
+  SignOut,
+  SlidersHorizontal,
+  Trophy,
+  VideoCamera,
+  X,
+} from '@phosphor-icons/react';
+import {
+  API_BASE_URL,
+  AuthProvidersStatus,
   clearAuthToken,
+  fetchAuthProviders,
   fetchMatchDetail,
   fetchMyVideos,
   getAuthToken,
   getLocalVideoByMatchId,
   PlayerSearchResult,
-  quickLoginWithRiotId,
+  pollAuthSession,
+  prepareRiotLinkUrl,
+  prepareSteamLinkUrl,
   searchPlayerProfile,
   setAuthToken,
   syncRealPubgMatches,
+  syncRealValorantMatches,
 } from './services/localDb';
 import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
@@ -18,12 +40,11 @@ import { FriendsLeaderboard } from './components/FriendsLeaderboard';
 import { SettingsVaultModal } from './components/SettingsVaultModal';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
-
 interface UserProfile {
   id: number;
   riot_game_name: string | null;
   riot_tag_line: string | null;
+  has_riot_linked?: boolean;
   steam_id: string | null;
   steam_persona_name: string | null;
   steam_avatar: string | null;
@@ -44,6 +65,30 @@ interface SavedMatchItem {
   played_at: string;
 }
 
+function generateSessionId(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+const SteamBrandMark: React.FC = () => (
+  <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0z" />
+  </svg>
+);
+
+const RiotBrandMark: React.FC = () => (
+  <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12.534 21.77l-1.09-2.81 10.52.54-.451 4.5zM15.06 0L.307 6.969 2.59 17.471H5.6l-.52-7.512.461-.144 1.81 7.656h3.126l-.116-9.15.462-.144 1.582 9.294h3.31l.78-11.053.462-.144.82 11.197h4.376l1.54-15.37Z" />
+  </svg>
+);
+
 const UpdateBanner: React.FC = () => {
   const [updateState, setUpdateState] = useState<{
     status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
@@ -60,15 +105,16 @@ const UpdateBanner: React.FC = () => {
   if (updateState.status === 'idle' || updateState.status === 'error') return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 bg-slate-900 border border-emerald-500/40 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+    <div className="fixed bottom-4 right-4 z-50 bg-[#10141C] border border-[#10B981]/50 text-[#EEF2F6] px-4 py-3 rounded-[4px] shadow-2xl flex items-center gap-3">
       {updateState.status === 'available' && (
         <>
-          <span className="text-xs sm:text-sm">
-            Có phiên bản mới <b className="text-emerald-400">v{updateState.version}</b>!
+          <span className="text-xs font-mono">
+            Phiên bản mới <b className="text-[#10B981]">v{updateState.version}</b> sẵn sàng
           </span>
           <button
+            type="button"
             onClick={() => (window as any).electronUpdater?.downloadUpdate()}
-            className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition"
+            className="bg-[#10B981] hover:bg-emerald-400 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
           >
             Cập nhật ngay
           </button>
@@ -76,19 +122,20 @@ const UpdateBanner: React.FC = () => {
       )}
 
       {updateState.status === 'downloading' && (
-        <span className="text-xs sm:text-sm text-sky-300">
+        <span className="text-xs font-mono text-[#38BDF8] tabular-nums">
           Đang tải bản cập nhật... <b>{updateState.percent ?? 0}%</b>
         </span>
       )}
 
       {updateState.status === 'downloaded' && (
         <>
-          <span className="text-xs sm:text-sm">Tải hoàn tất!</span>
+          <span className="text-xs font-mono">Tải hoàn tất</span>
           <button
+            type="button"
             onClick={() => (window as any).electronUpdater?.installUpdate()}
-            className="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition"
+            className="bg-[#38BDF8] hover:bg-sky-300 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
           >
-            Khởi động lại để áp dụng
+            Khởi động lại
           </button>
         </>
       )}
@@ -97,6 +144,7 @@ const UpdateBanner: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const reduceMotion = useReducedMotion();
   const [token, setTokenState] = useState<string | null>(() => getAuthToken());
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [videos, setVideos] = useState<SavedMatchItem[]>([]);
@@ -108,61 +156,170 @@ const App: React.FC = () => {
   const [selectedRound, setSelectedRound] = useState<number>(1);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
 
-  // State cho thanh tìm kiếm nhân vật ở trang giới thiệu
+  const [providers, setProviders] = useState<AuthProvidersStatus>({
+    riotRsoReady: true,
+    riotApiReady: true,
+    steamReady: true,
+  });
+
   const [searchGame, setSearchGame] = useState<'PUBG' | 'VALORANT'>('PUBG');
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<PlayerSearchResult | null>(null);
 
-  // State đăng nhập / liên kết nhanh bằng Riot ID#Tag
-  const [quickRiotId, setQuickRiotId] = useState('');
-  const [loggingInRiot, setLoggingInRiot] = useState(false);
-
-  // State cho Giai đoạn 3 & 4 (Bảng xếp hạng, Kho Sens/Crosshair, Post-Match Recap)
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showSettingsVault, setShowSettingsVault] = useState(false);
   const [showPostMatchRecap, setShowPostMatchRecap] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [syncingPubg, setSyncingPubg] = useState(false);
+  const [syncingValorant, setSyncingValorant] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const videosRef = useRef<SavedMatchItem[]>(videos);
   videosRef.current = videos;
+  const activeGameTabRef = useRef(activeGameTab);
+  activeGameTabRef.current = activeGameTab;
+  const pollIntervalRef = useRef<number | null>(null);
+
+  const serverRootUrl = API_BASE_URL.replace(/\/api\/?$/, '');
+
+  const stopAuthPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      window.clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  const applyAuthenticatedToken = useCallback(
+    (receivedToken: string) => {
+      stopAuthPolling();
+      setAuthToken(receivedToken);
+      setTokenState(receivedToken);
+      setStatusMsg(null);
+    },
+    [stopAuthPolling]
+  );
+
+  useEffect(() => {
+    void fetchAuthProviders()
+      .then(setProviders)
+      .catch(() => {});
+    return () => stopAuthPolling();
+  }, [stopAuthPolling]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const urlToken = params.get('token');
+    const authError = params.get('authError');
+
     if (urlToken) {
-      setAuthToken(urlToken);
-      setTokenState(urlToken);
+      applyAuthenticatedToken(urlToken);
+    } else if (authError) {
+      setStatusMsg(authError);
+    }
+
+    if (urlToken || authError) {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-  }, []);
+  }, [applyAuthenticatedToken]);
 
-  // Lắng nghe token trả về từ trình duyệt ngoài qua deep-link tacticalreplay://
   useEffect(() => {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.onAuthToken) return;
     return electronAPI.onAuthToken((receivedToken: string) => {
-      setAuthToken(receivedToken);
-      setTokenState(receivedToken);
-      setStatusMsg(null);
+      applyAuthenticatedToken(receivedToken);
     });
+  }, [applyAuthenticatedToken]);
+
+  const resetSelection = useCallback(() => {
+    setSelectedMatchId(null);
+    setRounds([]);
+    setReport(null);
+    setSelectedRound(1);
+    setVideoSrc(null);
   }, []);
+
+  const handleSelectMatch = useCallback(async (match: SavedMatchItem) => {
+    setSelectedMatchId(match.match_id);
+    setSelectedRound(1);
+
+    const localRec = getLocalVideoByMatchId(match.match_id);
+    if (localRec?.videoUrl) {
+      setVideoSrc(localRec.videoUrl);
+    } else if (localRec?.filePath) {
+      setVideoSrc(`file:///${localRec.filePath.replace(/\\/g, '/')}`);
+    } else if (match.cloud_video_url) {
+      setVideoSrc(match.cloud_video_url);
+    } else {
+      setVideoSrc(null);
+    }
+
+    try {
+      const detail = await fetchMatchDetail(match.match_id);
+      setRounds(detail.rounds || []);
+      setReport(detail.report || null);
+      if (detail.rounds?.length > 0) {
+        setSelectedRound(detail.rounds[0].roundNumber);
+      }
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Lỗi tải chi tiết phân tích trận đấu.');
+    }
+  }, []);
+
+  const loadUserVideos = useCallback(
+    async (preferredTab?: 'VALORANT' | 'PUBG') => {
+      setLoading(true);
+      try {
+        const data = await fetchMyVideos();
+        const loadedProfile: UserProfile | null = data.profile || null;
+        const loadedVideos: SavedMatchItem[] = data.videos || [];
+
+        setProfile(loadedProfile);
+        setVideos(loadedVideos);
+
+        let targetTab = preferredTab || activeGameTabRef.current;
+        if (!preferredTab && loadedProfile) {
+          const hasRiot = Boolean(loadedProfile.has_riot_linked || loadedProfile.riot_game_name);
+          const hasPubg = Boolean(loadedProfile.steam_id || loadedProfile.pubg_player_name);
+          if (hasRiot && !hasPubg) {
+            targetTab = 'VALORANT';
+            setActiveGameTab('VALORANT');
+          } else if (hasPubg && !hasRiot) {
+            targetTab = 'PUBG';
+            setActiveGameTab('PUBG');
+          }
+        }
+
+        const tabMatches = loadedVideos.filter((v) => v.game_type === targetTab);
+        if (tabMatches.length > 0) {
+          await handleSelectMatch(tabMatches[0]);
+        } else {
+          resetSelection();
+        }
+      } catch (err: any) {
+        setStatusMsg(err.message || 'Không thể tải danh sách trận đấu.');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [handleSelectMatch, resetSelection]
+  );
 
   useEffect(() => {
     if (!token) return;
     void loadUserVideos();
-  }, [token]);
+  }, [token, loadUserVideos]);
 
-  // Tự động kiểm tra trận mới mỗi 45 giây và cập nhật danh sách 20 trận gần nhất
   useEffect(() => {
     if (!token) return;
 
     const autoCheckNewMatches = async () => {
       try {
-        if (activeGameTab === 'PUBG' && (profile?.pubg_player_name || profile?.steam_persona_name)) {
+        if (
+          activeGameTab === 'PUBG' &&
+          (profile?.pubg_player_name || profile?.steam_persona_name)
+        ) {
           const res = await syncRealPubgMatches();
           if (res.syncedCount > 0) {
             setStatusMsg(res.message);
@@ -199,49 +356,7 @@ const App: React.FC = () => {
     }, 45000);
 
     return () => clearInterval(timer);
-  }, [token, activeGameTab, profile]);
-
-  const loadUserVideos = async (preferredTab?: 'VALORANT' | 'PUBG') => {
-    setLoading(true);
-    try {
-      const data = await fetchMyVideos();
-      const loadedProfile: UserProfile | null = data.profile || null;
-      const loadedVideos: SavedMatchItem[] = data.videos || [];
-
-      setProfile(loadedProfile);
-      setVideos(loadedVideos);
-
-      let targetTab = preferredTab || activeGameTab;
-      if (!preferredTab && loadedProfile) {
-        if (loadedProfile.riot_game_name && !loadedProfile.steam_id && !loadedProfile.pubg_player_name) {
-          targetTab = 'VALORANT';
-          setActiveGameTab('VALORANT');
-        } else if (loadedProfile.steam_id || loadedProfile.pubg_player_name) {
-          targetTab = 'PUBG';
-          setActiveGameTab('PUBG');
-        }
-      }
-
-      const tabMatches = loadedVideos.filter((v) => v.game_type === targetTab);
-      if (tabMatches.length > 0) {
-        await handleSelectMatch(tabMatches[0]);
-      } else {
-        resetSelection();
-      }
-    } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể tải danh sách trận đấu.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const resetSelection = () => {
-    setSelectedMatchId(null);
-    setRounds([]);
-    setReport(null);
-    setSelectedRound(1);
-    setVideoSrc(null);
-  };
+  }, [token, activeGameTab, profile, loadUserVideos, handleSelectMatch]);
 
   const handleSwitchGameTab = async (tab: 'VALORANT' | 'PUBG') => {
     if (tab === activeGameTab) return;
@@ -253,33 +368,6 @@ const App: React.FC = () => {
       await handleSelectMatch(tabMatches[0]);
     } else {
       resetSelection();
-    }
-  };
-
-  const handleSelectMatch = async (match: SavedMatchItem) => {
-    setSelectedMatchId(match.match_id);
-    setSelectedRound(1);
-
-    const localRec = getLocalVideoByMatchId(match.match_id);
-    if (localRec?.videoUrl) {
-      setVideoSrc(localRec.videoUrl);
-    } else if (localRec?.filePath) {
-      setVideoSrc(`file:///${localRec.filePath.replace(/\\/g, '/')}`);
-    } else if (match.cloud_video_url) {
-      setVideoSrc(match.cloud_video_url);
-    } else {
-      setVideoSrc(null);
-    }
-
-    try {
-      const detail = await fetchMatchDetail(match.match_id);
-      setRounds(detail.rounds || []);
-      setReport(detail.report || null);
-      if (detail.rounds?.length > 0) {
-        setSelectedRound(detail.rounds[0].roundNumber);
-      }
-    } catch (err: any) {
-      setStatusMsg(err.message || 'Lỗi tải chi tiết phân tích trận đấu.');
     }
   };
 
@@ -301,53 +389,120 @@ const App: React.FC = () => {
     }
   };
 
-  const handleQuickRiotLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!quickRiotId.trim()) return;
+  const getClientReturnConfig = () => {
+    const isElectronApp =
+      window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
+    const isOverwolfApp =
+      typeof overwolf !== 'undefined' && Boolean(overwolf.utils?.openUrlInDefaultBrowser);
 
-    setLoggingInRiot(true);
-    setStatusMsg(null);
-    try {
-      const res = await quickLoginWithRiotId(quickRiotId.trim());
-      setActiveGameTab('VALORANT');
-      setQuickRiotId('');
-      if (token) {
-        await loadUserVideos('VALORANT');
-        setStatusMsg(`Đã liên kết tài khoản VALORANT: ${res.user.riot_game_name}#${res.user.riot_tag_line}`);
-      } else {
-        setTokenState(res.token);
-      }
-    } catch (err: any) {
-      setStatusMsg(err.message || 'Vui lòng nhập đúng định dạng Riot ID#Tag.');
-    } finally {
-      setLoggingInRiot(false);
+    if (isElectronApp) {
+      return { mode: 'electron' as const, returnTo: 'electron', sessionId: generateSessionId() };
     }
+    if (isOverwolfApp) {
+      return { mode: 'overwolf' as const, returnTo: 'poll', sessionId: generateSessionId() };
+    }
+    return {
+      mode: 'web' as const,
+      returnTo: window.location.href.split('?')[0],
+      sessionId: undefined,
+    };
   };
 
-  const openAuthUrl = (authUrl: string) => {
+  const startSessionPolling = (sessionId: string) => {
+    stopAuthPolling();
+    const startedAt = Date.now();
+    pollIntervalRef.current = window.setInterval(async () => {
+      if (Date.now() - startedAt > 3 * 60 * 1000) {
+        stopAuthPolling();
+        return;
+      }
+      try {
+        const state = await pollAuthSession(sessionId);
+        if (state.status === 'completed' && state.token) {
+          applyAuthenticatedToken(state.token);
+        } else if (state.status === 'error' && state.error) {
+          stopAuthPolling();
+          setStatusMsg(state.error);
+        }
+      } catch {
+        // Bỏ qua lỗi mạng tạm thời trong lúc chờ người dùng đăng nhập trên trình duyệt
+      }
+    }, 2000);
+  };
+
+  const openAuthFlow = (
+    authUrl: string,
+    mode: 'electron' | 'overwolf' | 'web',
+    sessionId?: string
+  ) => {
     const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.openExternal) {
+    if (mode === 'electron' && electronAPI?.openExternal) {
+      if (sessionId) startSessionPolling(sessionId);
       void electronAPI.openExternal(authUrl);
-      setStatusMsg('Đã mở trang đăng nhập trên trình duyệt. Vui lòng hoàn tất đăng nhập để quay lại ứng dụng.');
-    } else {
-      window.location.href = authUrl;
+      setStatusMsg(
+        'Đã mở trang đăng nhập trên trình duyệt. Hoàn tất xác thực để tự động quay lại ứng dụng.'
+      );
+      return;
     }
+
+    if (
+      mode === 'overwolf' &&
+      typeof overwolf !== 'undefined' &&
+      overwolf.utils?.openUrlInDefaultBrowser
+    ) {
+      if (sessionId) startSessionPolling(sessionId);
+      overwolf.utils.openUrlInDefaultBrowser(authUrl);
+      setStatusMsg(
+        'Đã mở trình duyệt mặc định để xác thực tài khoản. Ứng dụng sẽ tự động đăng nhập sau khi hoàn tất.'
+      );
+      return;
+    }
+
+    window.location.href = authUrl;
   };
 
   const handleSteamLogin = () => {
-    const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
-    const returnTo = isDesktopApp
-      ? 'electron'
-      : encodeURIComponent(window.location.href.split('?')[0]);
-    openAuthUrl(`${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`);
+    const { mode, returnTo, sessionId } = getClientReturnConfig();
+    const params = new URLSearchParams({ returnTo });
+    if (sessionId) params.set('sessionId', sessionId);
+    openAuthFlow(`${API_BASE_URL}/auth/steam/login?${params.toString()}`, mode, sessionId);
   };
 
-  const handleRiotLogin = () => {
-    const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
-    const returnTo = isDesktopApp
-      ? 'electron'
-      : encodeURIComponent(window.location.href.split('?')[0]);
-    openAuthUrl(`${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`);
+  const handleRiotLogin = (forceLoginPrompt = false) => {
+    if (!providers.riotRsoReady) {
+      setStatusMsg(
+        'Riot Sign On (RSO) chưa sẵn sàng vì máy chủ chưa có RIOT_CLIENT_ID & RIOT_CLIENT_SECRET chính thức từ Riot Developer Portal.'
+      );
+      return;
+    }
+
+    const { mode, returnTo, sessionId } = getClientReturnConfig();
+    const params = new URLSearchParams({ returnTo });
+    if (sessionId) params.set('sessionId', sessionId);
+    if (forceLoginPrompt) params.set('prompt', 'login');
+    openAuthFlow(`${API_BASE_URL}/auth/riot/login?${params.toString()}`, mode, sessionId);
+  };
+
+  const handleLinkRiotAccount = async () => {
+    setStatusMsg(null);
+    const { mode, returnTo, sessionId } = getClientReturnConfig();
+    try {
+      const { authUrl } = await prepareRiotLinkUrl({ returnTo, sessionId });
+      openAuthFlow(authUrl, mode, sessionId);
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Không thể khởi tạo liên kết Riot Sign On.');
+    }
+  };
+
+  const handleLinkSteamAccount = async () => {
+    setStatusMsg(null);
+    const { mode, returnTo, sessionId } = getClientReturnConfig();
+    try {
+      const { authUrl } = await prepareSteamLinkUrl({ returnTo, sessionId });
+      openAuthFlow(authUrl, mode, sessionId);
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Không thể khởi tạo liên kết Steam.');
+    }
   };
 
   const handleSyncPubg = async () => {
@@ -364,6 +519,20 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSyncValorant = async () => {
+    setSyncingValorant(true);
+    setStatusMsg(null);
+    try {
+      const res = await syncRealValorantMatches();
+      setStatusMsg(res.message);
+      await loadUserVideos('VALORANT');
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Không thể đồng bộ trận VALORANT.');
+    } finally {
+      setSyncingValorant(false);
+    }
+  };
+
   const handleCopyShareLink = async (matchId: string) => {
     const shareUrl = `${API_BASE_URL}/analyze/public-match/${encodeURIComponent(matchId)}`;
     await navigator.clipboard.writeText(shareUrl);
@@ -371,6 +540,7 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    stopAuthPolling();
     clearAuthToken();
     setTokenState(null);
     setProfile(null);
@@ -379,45 +549,88 @@ const App: React.FC = () => {
   };
 
   // ==========================================================================
-  // TRANG GIỚI THIỆU: TÌM KIẾM NHÂN VẬT + CHỌN ĐĂNG NHẬP RIOT / STEAM
+  // 1. TRANG GIOI THIEU & XAC THUC (ASYMMETRIC TELEMETRY LANDING)
   // ==========================================================================
   if (!token) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-        <nav className="border-b border-slate-900 px-6 lg:px-12 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-[#ff4655] to-amber-500 flex items-center justify-center font-black text-slate-950 text-sm">
-              TR
+      <div className="min-h-[100dvh] bg-[#0A0D12] tactical-grid-bg text-[#EEF2F6] flex flex-col">
+        <header className="h-16 border-b border-[#232B3B] bg-[#0A0D12]/90 backdrop-blur-sm">
+          <div className="max-w-7xl mx-auto h-full px-6 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 rounded-[2px] bg-[#FF4655] flex items-center justify-center font-display font-bold text-[#EEF2F6] text-sm">
+                TR
+              </div>
+              <span className="font-display text-lg font-bold tracking-tight text-[#EEF2F6]">
+                TacticalReplay<span className="text-[#FF4655]">AI</span>
+              </span>
             </div>
-            <span className="text-lg font-extrabold tracking-tight text-white">
-              TacticalReplay<span className="text-[#ff4655]">AI</span>
-            </span>
+
+            <div className="flex items-center gap-4">
+              <nav aria-label="Pháp lý và tuân thủ" className="hidden sm:flex items-center gap-4 text-xs text-[#94A3B8]">
+                <a
+                  href={`${serverRootUrl}/privacy`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:text-[#EEF2F6] transition duration-150"
+                >
+                  Privacy
+                </a>
+                <a
+                  href={`${serverRootUrl}/terms`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:text-[#EEF2F6] transition duration-150"
+                >
+                  Terms
+                </a>
+              </nav>
+
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 font-mono text-[11px] font-bold text-[#10B981]">
+                <ShieldCheck size={14} weight="bold" aria-hidden="true" />
+                <span>Vanguard &amp; BattlEye Compliant</span>
+              </span>
+            </div>
           </div>
+        </header>
 
-          <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-xs font-medium text-emerald-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Vanguard & BattlEye Compliant
-          </span>
-        </nav>
-
-        <main className="flex-1 flex items-center justify-center px-6 py-10">
-          <div className="max-w-3xl w-full space-y-8">
-            <div className="text-center space-y-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
-                Post-Match Video Replay & Tactical Analysis
+        <main
+          id="main-content"
+          className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 lg:py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center"
+        >
+          {/* Cot trai: Hero Briefing + Tra cuu ho so */}
+          <motion.section
+            aria-label="Giới thiệu và tra cứu người chơi"
+            initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            className="lg:col-span-7 space-y-6"
+          >
+            <div className="space-y-3">
+              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-[#E59A23] flex items-center gap-2">
+                <Broadcast size={14} weight="bold" aria-hidden="true" />
+                <span>Post-Match Video Replay &amp; Telemetry</span>
               </p>
-              <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-                Phân tích chiến thuật sau trận đấu cho VALORANT & PUBG
+              <h1 className="font-display text-[clamp(1.85rem,3.4vw,2.9rem)] font-bold tracking-tight leading-[1.08] text-[#EEF2F6] text-balance">
+                Phân tích chiến thuật sau trận đấu cho VALORANT &amp; PUBG
               </h1>
-              <p className="text-sm text-slate-400 max-w-xl mx-auto leading-relaxed">
-                Tra cứu nhanh hồ sơ người chơi hoặc đăng nhập tài khoản để tự động ghi hình, đánh dấu các mốc giao tranh và phân tích từng round.
+              <p className="text-sm text-[#94A3B8] max-w-[56ch] leading-relaxed">
+                Tự động ghi hình highlight, đồng bộ mốc hạ gục theo từng round và nhận đánh giá AI Coach thực chiến.
               </p>
             </div>
 
-            {/* Thanh tìm kiếm nhân vật đặt ngay tại trang giới thiệu */}
-            <div className="bg-slate-900/95 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
-              <form onSubmit={handleLandingSearch} className="flex flex-col sm:flex-row gap-2.5">
-                <div className="flex p-1 rounded-xl bg-slate-950 border border-slate-800 shrink-0">
+            {/* Player Lookup Terminal */}
+            <div className="bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 space-y-4">
+              <div className="flex items-center justify-between gap-2 border-b border-[#232B3B] pb-2.5">
+                <span className="font-mono text-[11px] font-bold text-[#94A3B8]">
+                  TRA CỨU NHANH HỒ SƠ NGƯỜI CHƠI
+                </span>
+                <span className="font-mono text-[10px] text-[#64748B]">
+                  PUBG SHARD / RIOT ACCOUNT-V1
+                </span>
+              </div>
+
+              <form onSubmit={handleLandingSearch} className="flex flex-col sm:flex-row gap-2">
+                <div className="flex p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] shrink-0">
                   <button
                     type="button"
                     onClick={() => {
@@ -425,10 +638,10 @@ const App: React.FC = () => {
                       setSearchResult(null);
                       setStatusMsg(null);
                     }}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-extrabold transition ${
+                    className={`px-3 py-2 rounded-[2px] font-mono text-xs font-bold transition duration-150 ${
                       searchGame === 'PUBG'
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-[#E59A23] text-[#0A0D12]'
+                        : 'text-[#94A3B8] hover:text-[#EEF2F6]'
                     }`}
                   >
                     PUBG
@@ -440,183 +653,209 @@ const App: React.FC = () => {
                       setSearchResult(null);
                       setStatusMsg(null);
                     }}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-extrabold transition ${
+                    className={`px-3 py-2 rounded-[2px] font-mono text-xs font-bold transition duration-150 ${
                       searchGame === 'VALORANT'
-                        ? 'bg-[#ff4655] text-white'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-[#FF4655] text-[#EEF2F6]'
+                        : 'text-[#94A3B8] hover:text-[#EEF2F6]'
                     }`}
                   >
                     VALORANT
                   </button>
                 </div>
 
+                <label htmlFor="landing-player-search" className="sr-only">
+                  {searchGame === 'PUBG'
+                    ? 'Tên nhân vật PUBG cần tìm'
+                    : 'Riot ID đầy đủ cần tìm'}
+                </label>
                 <input
+                  id="landing-player-search"
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={
                     searchGame === 'PUBG'
-                      ? 'Tìm kiếm tên nhân vật PUBG...'
-                      : 'Tìm kiếm Riot ID đầy đủ (Ví dụ: Player#VN1)...'
+                      ? 'Nhập tên nhân vật PUBG...'
+                      : 'Nhập Riot ID#Tag (VD: Player#VN1)...'
                   }
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-slate-600"
+                  className="flex-1 min-w-0 px-3.5 py-2.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#EEF2F6] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
                 />
 
                 <button
                   type="submit"
                   disabled={searching}
-                  className={`px-6 py-2.5 rounded-xl font-bold text-xs transition shrink-0 ${
+                  className={`inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-[2px] font-bold text-xs transition duration-150 shrink-0 disabled:opacity-50 active:translate-y-[1px] ${
                     searchGame === 'PUBG'
-                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                      : 'bg-[#ff4655] hover:bg-rose-500 text-white'
-                  } disabled:opacity-50`}
+                      ? 'bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12]'
+                      : 'bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6]'
+                  }`}
                 >
-                  {searching ? 'Đang tìm...' : 'Tìm kiếm'}
+                  <MagnifyingGlass size={14} weight="bold" aria-hidden="true" />
+                  <span>{searching ? 'Đang tìm...' : 'Tìm kiếm'}</span>
                 </button>
               </form>
 
               {statusMsg && (
-                <div className="p-3 rounded-xl bg-sky-950/70 border border-sky-800/80 text-xs text-sky-200 text-center">
+                <div
+                  role="status"
+                  className="p-3 rounded-[2px] bg-[#38BDF8]/10 border border-[#38BDF8]/30 text-xs text-[#38BDF8]"
+                >
                   {statusMsg}
                 </div>
               )}
 
-              {/* Kết quả tra cứu nhân vật ngay trên trang giới thiệu */}
               {searchResult && (
-                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-                    <div className="flex items-center gap-2.5">
+                <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232B3B] pb-2.5">
+                    <div className="flex items-center gap-2">
                       <span
-                        className={`px-2.5 py-0.5 rounded text-[11px] font-extrabold ${
+                        className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border ${
                           searchResult.gameType === 'PUBG'
-                            ? 'bg-amber-500/20 text-amber-400'
-                            : 'bg-[#ff4655]/20 text-[#ff4655]'
+                            ? 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
+                            : 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
                         }`}
                       >
-                        {searchResult.gameType} • {searchResult.player.region}
+                        {searchResult.gameType} - {searchResult.player.region}
                       </span>
-                      <span className="text-base font-bold text-white">
+                      <span className="font-display text-sm font-bold text-[#EEF2F6]">
                         {searchResult.player.name}
                       </span>
                     </div>
 
                     <button
-                      onClick={() => {
-                        if (searchResult.gameType === 'PUBG') {
-                          handleSteamLogin();
-                        } else {
-                          setQuickRiotId(searchResult.player.name);
-                        }
-                      }}
-                      className="text-xs font-semibold text-sky-400 hover:underline"
+                      type="button"
+                      onClick={() =>
+                        searchResult.gameType === 'PUBG'
+                          ? handleSteamLogin()
+                          : handleRiotLogin(false)
+                      }
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-[#38BDF8] hover:underline"
                     >
-                      {searchResult.gameType === 'PUBG'
-                        ? 'Đăng nhập Steam để xem chi tiết →'
-                        : 'Điền Riot ID để vào phân tích →'}
+                      <span>
+                        {searchResult.gameType === 'PUBG'
+                          ? 'Đăng nhập Steam'
+                          : 'Đăng nhập RSO'}
+                      </span>
+                      <ArrowRight size={12} weight="bold" aria-hidden="true" />
                     </button>
                   </div>
 
                   {searchResult.recentMatches.length > 0 ? (
-                    <div className="space-y-2">
-                      <p className="text-[11px] font-semibold text-slate-400">
-                        {searchResult.recentMatches.length} trận đấu gần nhất:
-                      </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-h-72 overflow-y-auto pr-1">
-                        {searchResult.recentMatches.map((m) => (
-                          <div
-                            key={m.matchId}
-                            className="p-3 rounded-lg bg-slate-900 border border-slate-800/80 text-xs space-y-1"
-                          >
-                            <div className="flex justify-between text-slate-400">
-                              <span className="font-bold text-slate-200">{m.mapName}</span>
-                              <span>{new Date(m.playedAt).toLocaleDateString('vi-VN')}</span>
-                            </div>
-                            <p className="text-amber-400 font-bold">
-                              TOP #{m.winPlace} • {m.kills} Kills
-                            </p>
-                            <p className="text-slate-500 text-[11px]">
-                              {m.gameMode} • {m.damageDealt} DMG
-                            </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto tactical-scrollbar pr-1">
+                      {searchResult.recentMatches.map((m) => (
+                        <div
+                          key={m.matchId}
+                          className="p-2.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] text-xs space-y-1"
+                        >
+                          <div className="flex justify-between font-mono text-[10px] text-[#94A3B8]">
+                            <span className="font-bold text-[#EEF2F6]">{m.mapName}</span>
+                            <span className="tabular-nums">
+                              {new Date(m.playedAt).toLocaleDateString('vi-VN')}
+                            </span>
                           </div>
-                        ))}
-                      </div>
+                          <p className="font-mono text-[#E59A23] font-bold tabular-nums">
+                            TOP #{m.winPlace} - {m.kills}K
+                          </p>
+                          <p className="font-mono text-[#64748B] text-[10px] tabular-nums">
+                            {m.gameMode} - {m.damageDealt} DMG
+                          </p>
+                        </div>
+                      ))}
                     </div>
                   ) : (
-                    <p className="text-xs text-slate-400">
-                      Đã xác thực hồ sơ hợp lệ (ID: <span className="font-mono text-slate-300">{searchResult.player.id.slice(0, 18)}...</span>). Đăng nhập bên dưới để đồng bộ lịch sử trận đấu và video replay.
+                    <p className="text-xs text-[#94A3B8]">
+                      Hồ sơ hợp lệ (ID:{' '}
+                      <span className="font-mono text-[#EEF2F6]">
+                        {searchResult.player.id.slice(0, 18)}...
+                      </span>
+                      ). Đăng nhập Riot Sign On để đồng bộ lịch sử trận đấu và video replay.
                     </p>
                   )}
                 </div>
               )}
             </div>
+          </motion.section>
 
-            {/* Hai thẻ đăng nhập chính thức: Steam (PUBG) và Riot ID / RSO (VALORANT) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="bg-slate-900/90 border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 flex flex-col justify-between gap-5 transition">
-                <div className="space-y-2">
-                  <span className="inline-block px-2.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[11px] font-bold">
-                    PUBG: BATTLEGROUNDS
-                  </span>
-                  <h2 className="text-lg font-bold text-white">Không gian PUBG</h2>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Phân tích diễn biến từng giai đoạn vòng bo (Phase), lượng sát thương, góc di chuyển và video replay trận đấu.
-                  </p>
-                </div>
-
-                <button
-                  onClick={handleSteamLogin}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#1b2838] to-[#2a475e] hover:brightness-110 border border-sky-500/30 text-white font-bold text-xs transition flex items-center justify-center gap-2.5"
-                >
-                  <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                    <path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0z" />
-                  </svg>
-                  <span>Đăng nhập bằng Steam</span>
-                </button>
+          {/* Cot phai: Hai cong dang nhap chinh thuc */}
+          <motion.section
+            aria-label="Cổng đăng nhập tài khoản game"
+            initial={reduceMotion ? false : { opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.06, ease: [0.16, 1, 0.3, 1] }}
+            className="lg:col-span-5 space-y-4"
+          >
+            {/* Card PUBG */}
+            <div className="bg-[#10141C] border border-[#232B3B] hover:border-[#E59A23]/60 rounded-[4px] p-5 space-y-4 transition duration-200">
+              <div className="flex items-center justify-between gap-2">
+                <span className="px-2 py-0.5 rounded-[2px] bg-[#E59A23]/15 border border-[#E59A23]/40 font-mono text-[10px] font-bold text-[#E59A23]">
+                  PUBG: BATTLEGROUNDS
+                </span>
+                <span className="font-mono text-[10px] font-bold text-[#10B981]">
+                  STEAM OPENID 2.0
+                </span>
               </div>
 
-              <div className="bg-slate-900/90 border border-slate-800 hover:border-[#ff4655]/50 rounded-2xl p-6 flex flex-col justify-between gap-4 transition">
-                <div className="space-y-2">
-                  <span className="inline-block px-2.5 py-0.5 rounded bg-[#ff4655]/15 text-[#ff4655] text-[11px] font-bold">
-                    VALORANT
-                  </span>
-                  <h2 className="text-lg font-bold text-white">Không gian VALORANT</h2>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Phân loại kinh tế từng round (Eco, Force, Full Buy), nhịp độ tấn công và cảnh báo tình huống chết lẻ không trade kill.
+              <div className="space-y-1.5">
+                <h2 className="font-display text-lg font-bold text-[#EEF2F6]">
+                  Không gian chiến thuật PUBG
+                </h2>
+                <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[45ch]">
+                  Theo dõi sát thương theo từng giai đoạn vòng bo (Phase), vũ khí, cự ly hạ gục và video replay tự động.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSteamLogin}
+                className="w-full py-3 px-4 rounded-[2px] bg-[#1B2838] hover:bg-[#24364B] border border-[#38BDF8]/35 text-[#EEF2F6] font-bold text-xs transition duration-150 flex items-center justify-center gap-2.5 active:translate-y-[1px]"
+              >
+                <SteamBrandMark />
+                <span>Đăng nhập bằng Steam</span>
+              </button>
+            </div>
+
+            {/* Card VALORANT */}
+            <div className="bg-[#10141C] border border-[#232B3B] hover:border-[#FF4655]/60 rounded-[4px] p-5 space-y-4 transition duration-200">
+              <div className="flex items-center justify-between gap-2">
+                <span className="px-2 py-0.5 rounded-[2px] bg-[#FF4655]/15 border border-[#FF4655]/40 font-mono text-[10px] font-bold text-[#FF4655]">
+                  VALORANT
+                </span>
+                <span
+                  className={`font-mono text-[10px] font-bold ${
+                    providers.riotRsoReady ? 'text-[#10B981]' : 'text-[#E59A23]'
+                  }`}
+                >
+                  {providers.riotRsoReady ? 'RSO SẴN SÀNG' : 'CHỜ RSO CLIENT ID'}
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <h2 className="font-display text-lg font-bold text-[#EEF2F6]">
+                  Không gian chiến thuật VALORANT
+                </h2>
+                <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[45ch]">
+                  Xác thực chính thức qua Riot Sign On (RSO), phân tích kinh tế round (Eco, Force, Full Buy) và lỗi vị trí.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => handleRiotLogin(false)}
+                  className="w-full py-3 px-4 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 flex items-center justify-center gap-2.5 active:translate-y-[1px]"
+                >
+                  <RiotBrandMark />
+                  <span>Đăng nhập bằng Riot Sign On (RSO)</span>
+                </button>
+
+                {!providers.riotRsoReady && (
+                  <p className="font-mono text-[11px] text-[#E59A23] leading-relaxed">
+                    Cần cấu hình RIOT_CLIENT_ID &amp; RIOT_CLIENT_SECRET từ Riot Developer Portal trong server/.env.
                   </p>
-                </div>
-
-                <div className="space-y-2.5">
-                  <form onSubmit={handleQuickRiotLogin} className="flex gap-2">
-                    <input
-                      type="text"
-                      value={quickRiotId}
-                      onChange={(e) => setQuickRiotId(e.target.value)}
-                      placeholder="Nhập Riot ID#Tag (VD: Player#VN1)"
-                      className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#ff4655]"
-                    />
-                    <button
-                      type="submit"
-                      disabled={loggingInRiot || !quickRiotId.trim()}
-                      className="px-4 py-2.5 rounded-xl bg-[#ff4655] hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs transition shrink-0"
-                    >
-                      {loggingInRiot ? 'Đang vào...' : 'Vào ngay'}
-                    </button>
-                  </form>
-
-                  <button
-                    type="button"
-                    onClick={handleRiotLogin}
-                    className="w-full py-2 px-4 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 font-semibold text-[11px] transition flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                      <path d="M12.534 21.77l-1.09-2.81 10.52.54-.451 4.5zM15.06 0L.307 6.969 2.59 17.471H5.6l-.52-7.512.461-.144 1.81 7.656h3.126l-.116-9.15.462-.144 1.582 9.294h3.31l.78-11.053.462-.144.82 11.197h4.376l1.54-15.37Z" />
-                    </svg>
-                    <span>Đăng nhập bằng Riot Sign On (RSO)</span>
-                  </button>
-                </div>
+                )}
               </div>
             </div>
-          </div>
+          </motion.section>
         </main>
 
         <UpdateBanner />
@@ -625,97 +864,106 @@ const App: React.FC = () => {
   }
 
   // ==========================================================================
-  // KHÔNG GIAN BÊN TRONG SAU ĐĂNG NHẬP (XOAY VÒNG 20 TRẬN & LƯU HIGHLIGHT)
+  // 2. KHONG GIAN COCKPIT SAU DANG NHAP (XOAY VONG 20 TRAN & HIGHLIGHT)
   // ==========================================================================
   const isValo = activeGameTab === 'VALORANT';
   const filteredVideos = videos.filter((v) => v.game_type === activeGameTab).slice(0, 20);
   const activeMatch = filteredVideos.find((v) => v.match_id === selectedMatchId);
   const activeRound = rounds.find((r) => r.roundNumber === selectedRound);
+  const hasRiotLinked = Boolean(profile?.has_riot_linked);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      <header className="border-b border-slate-800 px-6 py-3 bg-slate-900/80 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-4">
+    <div className="min-h-[100dvh] bg-[#0A0D12] text-[#EEF2F6] flex flex-col">
+      {/* Command Header - 1 dong tren desktop */}
+      <header className="min-h-[60px] border-b border-[#232B3B] px-5 py-2.5 bg-[#10141C] flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                isValo ? 'bg-[#ff4655]' : 'bg-amber-400'
+            <div
+              className={`h-7 w-7 rounded-[2px] flex items-center justify-center font-display font-bold text-xs ${
+                isValo ? 'bg-[#FF4655] text-[#EEF2F6]' : 'bg-[#E59A23] text-[#0A0D12]'
               }`}
-            />
-            <span className="text-base font-extrabold tracking-wide text-white">
+            >
+              TR
+            </div>
+            <h1 className="font-display text-base font-bold tracking-tight text-[#EEF2F6]">
               TacticalReplayAI
-            </span>
+            </h1>
           </div>
 
-          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800">
+          <div className="flex items-center gap-1 p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
             <button
+              type="button"
               onClick={() => void handleSwitchGameTab('VALORANT')}
-              className={`px-4 py-1.5 rounded-lg text-xs font-extrabold tracking-wide transition ${
+              className={`px-3 py-1.5 rounded-[2px] font-mono text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                 isValo
-                  ? 'bg-[#ff4655] text-white shadow-md shadow-rose-600/25'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-[#FF4655] text-[#EEF2F6]'
+                  : 'text-[#94A3B8] hover:text-[#EEF2F6]'
               }`}
             >
               VALORANT ({Math.min(20, videos.filter((v) => v.game_type === 'VALORANT').length)})
             </button>
             <button
+              type="button"
               onClick={() => void handleSwitchGameTab('PUBG')}
-              className={`px-4 py-1.5 rounded-lg text-xs font-extrabold tracking-wide transition ${
+              className={`px-3 py-1.5 rounded-[2px] font-mono text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                 !isValo
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/25'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-[#E59A23] text-[#0A0D12]'
+                  : 'text-[#94A3B8] hover:text-[#EEF2F6]'
               }`}
             >
               PUBG ({Math.min(20, videos.filter((v) => v.game_type === 'PUBG').length)})
             </button>
           </div>
 
-          {/* Thanh công cụ Giai đoạn 3 & 4 */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setShowLeaderboard(true)}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-sky-300 transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150 active:translate-y-[1px]"
             >
-              Bảng xếp hạng nhóm
+              <Trophy size={14} weight="bold" aria-hidden="true" />
+              <span>Bảng xếp hạng</span>
             </button>
             <button
               type="button"
               onClick={() => setShowSettingsVault(true)}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-emerald-300 transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#10B981] transition duration-150 active:translate-y-[1px]"
             >
-              Kho Sens &amp; Tâm
+              <SlidersHorizontal size={14} weight="bold" aria-hidden="true" />
+              <span>Kho Sens &amp; Tâm</span>
             </button>
             {activeMatch && (
               <>
                 <button
                   type="button"
                   onClick={() => setShowPostMatchRecap((prev) => !prev)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-amber-300 transition"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#E59A23] transition duration-150 active:translate-y-[1px]"
                 >
-                  Tóm tắt trận
+                  <Crosshair size={14} weight="bold" aria-hidden="true" />
+                  <span>Tóm tắt trận</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => void handleCopyShareLink(activeMatch.match_id)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 transition"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                 >
-                  Chia sẻ link
+                  <ShareNetwork size={14} weight="bold" aria-hidden="true" />
+                  <span>Chia sẻ link</span>
                 </button>
               </>
             )}
           </div>
         </div>
 
-        {/* Huy hiệu tài khoản đang đăng nhập và nút Đăng xuất */}
-        <div className="flex items-center gap-3">
+        {/* Account Pills + Sign Out */}
+        <div className="flex items-center gap-2.5">
           {profile?.steam_persona_name && (
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#1b2838] border border-sky-500/30 text-xs font-semibold text-sky-200">
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-[2px] bg-[#1B2838] border border-[#38BDF8]/30 text-xs font-semibold text-[#EEF2F6]">
               {profile.steam_avatar && (
                 <img
                   src={profile.steam_avatar}
-                  alt="Steam"
-                  className="w-4 h-4 rounded-full"
+                  alt={`Ảnh đại diện Steam của ${profile.steam_persona_name}`}
+                  className="w-4 h-4 rounded-[2px]"
                 />
               )}
               <span>{profile.steam_persona_name}</span>
@@ -723,140 +971,190 @@ const App: React.FC = () => {
           )}
 
           {profile?.riot_game_name && (
-            <span className="px-3 py-1 rounded-full bg-[#ff4655]/15 border border-[#ff4655]/30 text-xs font-semibold text-rose-300">
+            <span className="px-2.5 py-1 rounded-[2px] bg-[#FF4655]/15 border border-[#FF4655]/40 font-mono text-xs font-semibold text-[#FF4655]">
               {profile.riot_game_name}#{profile.riot_tag_line}
             </span>
           )}
 
           {!isValo && profile?.pubg_player_name && (
-            <span className="px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-xs font-semibold text-amber-300">
+            <span className="px-2.5 py-1 rounded-[2px] bg-[#E59A23]/15 border border-[#E59A23]/40 font-mono text-xs font-semibold text-[#E59A23]">
               IGN: {profile.pubg_player_name}
             </span>
           )}
 
           <button
+            type="button"
             onClick={handleLogout}
-            className="px-3.5 py-1.5 rounded-lg bg-slate-950 hover:bg-rose-950/50 border border-slate-800 text-xs text-slate-400 hover:text-rose-300 transition"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#0A0D12] hover:bg-[#F43F5E]/15 border border-[#232B3B] hover:border-[#F43F5E]/40 text-xs text-[#94A3B8] hover:text-[#F43F5E] transition duration-150 active:translate-y-[1px]"
           >
-            Đăng xuất
+            <SignOut size={14} weight="bold" aria-hidden="true" />
+            <span>Đăng xuất</span>
           </button>
         </div>
       </header>
 
       {statusMsg && (
-        <div className="bg-slate-900 border-b border-slate-800 px-6 py-2 text-xs text-sky-300 flex justify-between items-center">
+        <div
+          role="status"
+          className="bg-[#10141C] border-b border-[#232B3B] px-5 py-2 text-xs text-[#38BDF8] flex justify-between items-center gap-4"
+        >
           <span>{statusMsg}</span>
-          <button onClick={() => setStatusMsg(null)} className="text-slate-400 hover:text-white">
-            Đóng
+          <button
+            type="button"
+            aria-label="Đóng thông báo"
+            onClick={() => setStatusMsg(null)}
+            className="inline-flex items-center gap-1 text-[#94A3B8] hover:text-[#EEF2F6]"
+          >
+            <X size={13} weight="bold" aria-hidden="true" />
+            <span>Đóng</span>
           </button>
         </div>
       )}
 
-      <main className="flex-1 grid grid-cols-12 gap-4 p-5">
-        <aside className="col-span-3 bg-slate-900/90 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+      {/* Cockpit Grid */}
+      <main
+        id="main-content"
+        className="flex-1 max-w-[1640px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 p-4"
+      >
+        {/* Cot trai: Danh sach 20 tran gan nhat */}
+        <aside
+          aria-label="Danh sách trận đấu"
+          className="lg:col-span-3 bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-3"
+        >
+          <div className="flex items-center justify-between border-b border-[#232B3B] pb-2.5">
+            <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] tabular-nums">
               {isValo
                 ? `20 Trận VALORANT (${filteredVideos.length}/20)`
                 : `20 Trận PUBG (${filteredVideos.length}/20)`}
             </h2>
             <button
+              type="button"
               onClick={() => void loadUserVideos(activeGameTab)}
-              className={`text-xs hover:underline ${isValo ? 'text-[#ff4655]' : 'text-amber-400'}`}
+              className={`inline-flex items-center gap-1 font-mono text-xs font-bold hover:underline ${
+                isValo ? 'text-[#FF4655]' : 'text-[#E59A23]'
+              }`}
             >
-              Làm mới
+              <ArrowsClockwise size={13} weight="bold" aria-hidden="true" />
+              <span>Làm mới</span>
             </button>
           </div>
 
           {!isValo && (profile?.pubg_player_name || profile?.steam_persona_name) && (
             <button
+              type="button"
               onClick={() => void handleSyncPubg()}
               disabled={syncingPubg}
-              className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs transition"
+              className="w-full py-2 px-3 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 disabled:opacity-50 text-[#0A0D12] font-bold text-xs transition duration-150 active:translate-y-[1px]"
             >
               {syncingPubg ? 'Đang đồng bộ 20 trận PUBG...' : 'Đồng bộ 20 trận PUBG gần nhất'}
             </button>
           )}
 
-          {isValo && !profile?.riot_game_name && (
-            <form onSubmit={handleQuickRiotLogin} className="flex gap-1.5">
-              <input
-                type="text"
-                value={quickRiotId}
-                onChange={(e) => setQuickRiotId(e.target.value)}
-                placeholder="Liên kết Riot ID#Tag..."
-                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#ff4655]"
-              />
-              <button
-                type="submit"
-                disabled={loggingInRiot || !quickRiotId.trim()}
-                className="px-3 py-1.5 rounded-lg bg-[#ff4655] hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs transition shrink-0"
-              >
-                {loggingInRiot ? '...' : 'Lưu'}
-              </button>
-            </form>
+          {!isValo && !profile?.steam_id && (
+            <button
+              type="button"
+              onClick={() => void handleLinkSteamAccount()}
+              className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-[2px] bg-[#1B2838] hover:bg-[#24364B] border border-[#38BDF8]/35 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
+            >
+              <LinkSimple size={14} weight="bold" aria-hidden="true" />
+              <span>Liên kết tài khoản Steam</span>
+            </button>
+          )}
+
+          {isValo && !hasRiotLinked && (
+            <button
+              type="button"
+              onClick={() => void handleLinkRiotAccount()}
+              className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
+            >
+              <LinkSimple size={14} weight="bold" aria-hidden="true" />
+              <span>Liên kết Riot Sign On (RSO)</span>
+            </button>
+          )}
+
+          {isValo && hasRiotLinked && (
+            <button
+              type="button"
+              onClick={() => void handleSyncValorant()}
+              disabled={syncingValorant}
+              className="w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 disabled:opacity-50 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
+            >
+              {syncingValorant
+                ? 'Đang đồng bộ 20 trận VALORANT...'
+                : 'Đồng bộ 20 trận VALORANT gần nhất'}
+            </button>
           )}
 
           {loading ? (
-            <p className="text-xs text-slate-500">Đang tải danh sách trận đấu...</p>
+            <div className="space-y-2 py-1" aria-label="Đang tải danh sách trận đấu">
+              {[1, 2, 3, 4, 5].map((item) => (
+                <div
+                  key={item}
+                  className="h-20 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] animate-pulse"
+                />
+              ))}
+            </div>
           ) : filteredVideos.length === 0 ? (
-            <div className="text-xs text-slate-400 space-y-2 py-3 leading-relaxed">
-              <p className="font-semibold text-slate-300">
+            <div className="rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] p-4 text-xs text-[#94A3B8] space-y-2 leading-relaxed">
+              <p className="font-bold text-[#EEF2F6]">
                 {isValo
                   ? 'Chưa có trận VALORANT nào được ghi nhận.'
                   : 'Chưa có trận PUBG nào được lưu.'}
               </p>
-              <p className="text-slate-500">
+              <p className="text-[#64748B]">
                 {isValo
-                  ? 'Khi bạn mở VALORANT thông qua Overwolf, ứng dụng sẽ tự động quay video highlight, lưu vào hệ thống và cập nhật 20 trận gần nhất.'
-                  : 'Bấm nút "Đồng bộ 20 trận PUBG gần nhất" phía trên hoặc chơi PUBG qua Overwolf để tự động lưu video highlight và phân tích.'}
+                  ? 'Mở VALORANT qua Overwolf để tự động quay highlight hoặc bấm đồng bộ lịch sử trận đấu phía trên.'
+                  : 'Bấm nút đồng bộ 20 trận PUBG hoặc chơi qua Overwolf để tự động lưu replay và phân tích.'}
               </p>
             </div>
           ) : (
-            <div className="space-y-2 overflow-y-auto max-h-[75vh] pr-1">
+            <div className="space-y-2 overflow-y-auto max-h-[75vh] tactical-scrollbar pr-1">
               {filteredVideos.map((v) => {
                 const isSelected = v.match_id === selectedMatchId;
                 const hasHighlight = Boolean(
                   v.cloud_video_url || getLocalVideoByMatchId(v.match_id)
                 );
-                const activeBorder = isValo
-                  ? 'bg-slate-800/90 border-[#ff4655]'
-                  : 'bg-slate-800/90 border-amber-500';
 
                 return (
                   <button
                     key={v.match_id}
+                    type="button"
                     onClick={() => void handleSelectMatch(v)}
-                    className={`w-full text-left p-3 rounded-xl border transition space-y-1 ${
+                    className={`w-full text-left p-3 rounded-[2px] border transition duration-150 space-y-1.5 active:translate-y-[1px] ${
                       isSelected
-                        ? activeBorder
-                        : 'bg-slate-950/70 border-slate-800/80 hover:bg-slate-800/40'
+                        ? isValo
+                          ? 'bg-[#FF4655]/12 border-[#FF4655]'
+                          : 'bg-[#E59A23]/12 border-[#E59A23]'
+                        : 'bg-[#0A0D12] border-[#232B3B] hover:border-[#334155] hover:bg-[#171D28]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1.5">
                       <div className="flex items-center gap-1.5">
                         <span
-                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded ${
+                          className={`font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] border ${
                             isValo
-                              ? 'bg-[#ff4655]/20 text-[#ff4655]'
-                              : 'bg-amber-500/20 text-amber-300'
+                              ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
+                              : 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
                           }`}
                         >
                           {v.game_mode || v.game_type}
                         </span>
                         {hasHighlight && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                            Highlight
+                          <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30">
+                            <VideoCamera size={10} weight="bold" aria-hidden="true" />
+                            <span>CLIP</span>
                           </span>
                         )}
                       </div>
-                      <span className="text-[11px] text-slate-500">
+                      <span className="font-mono text-[11px] text-[#64748B] tabular-nums">
                         {new Date(v.played_at).toLocaleDateString('vi-VN')}
                       </span>
                     </div>
-                    <p className="text-sm font-bold text-slate-200 truncate">{v.map_name}</p>
-                    <p className="text-xs text-slate-400">
-                      {v.match_result} {v.score_summary ? `• ${v.score_summary}` : ''}
+                    <p className="font-display text-sm font-bold text-[#EEF2F6] truncate">
+                      {v.map_name}
+                    </p>
+                    <p className="font-mono text-[11px] text-[#94A3B8] tabular-nums">
+                      {v.match_result} {v.score_summary ? `- ${v.score_summary}` : ''}
                     </p>
                   </button>
                 );
@@ -865,13 +1163,16 @@ const App: React.FC = () => {
           )}
         </aside>
 
-        <section className="col-span-6">
+        {/* Cot giua: Replay Theater & Round Matrix */}
+        <section aria-label="Trình phát replay và diễn biến round" className="lg:col-span-6">
           <ReplayPlayer
             gameType={activeGameTab}
             matchId={activeMatch?.match_id || null}
             hasSelectedMatch={Boolean(activeMatch)}
             videoSrc={videoSrc}
-            matchTitle={activeMatch ? `${activeMatch.map_name} (${activeMatch.match_result})` : ''}
+            matchTitle={
+              activeMatch ? `${activeMatch.map_name} (${activeMatch.match_result})` : ''
+            }
             rounds={rounds}
             selectedRound={selectedRound}
             onSelectRound={setSelectedRound}
@@ -889,7 +1190,8 @@ const App: React.FC = () => {
           />
         </section>
 
-        <aside className="col-span-3">
+        {/* Cot phai: Tactical Report & AI Coach */}
+        <aside aria-label="Báo cáo chiến thuật" className="lg:col-span-3">
           <TacticalReport
             gameType={activeGameTab}
             matchId={activeMatch?.match_id || null}

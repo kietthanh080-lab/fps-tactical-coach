@@ -1,7 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CheckCircle,
+  Crosshair,
+  ListChecks,
+  PaperPlaneRight,
+  Robot,
+  ShieldWarning,
+  Target,
+} from '@phosphor-icons/react';
 import { AnalyzedRoundUI, WeaponUsageStatUI } from './RoundTimeline';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+import { askAiCoach } from '../services/localDb';
 
 export interface MatchReportUI {
   overallScore: number;
@@ -27,15 +35,15 @@ interface ChatMessage {
 }
 
 const CATEGORY_BADGE_STYLES: Record<WeaponUsageStatUI['category'], string> = {
-  AR: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  DMR: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
-  SR: 'bg-rose-500/15 text-rose-300 border-rose-500/30',
-  SMG: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  LMG: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-  SG: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
-  Pistol: 'bg-slate-700/40 text-slate-300 border-slate-600/40',
-  Throwable: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
-  Other: 'bg-slate-800 text-slate-300 border-slate-700',
+  AR: 'bg-[#E59A23]/15 text-[#E59A23] border-[#E59A23]/40',
+  DMR: 'bg-[#38BDF8]/15 text-[#38BDF8] border-[#38BDF8]/40',
+  SR: 'bg-[#FF4655]/15 text-[#FF4655] border-[#FF4655]/40',
+  SMG: 'bg-[#10B981]/15 text-[#10B981] border-[#10B981]/40',
+  LMG: 'bg-teal-500/15 text-teal-300 border-teal-500/40',
+  SG: 'bg-orange-500/15 text-orange-300 border-orange-500/40',
+  Pistol: 'bg-slate-700/40 text-slate-300 border-slate-600/50',
+  Throwable: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/40',
+  Other: 'bg-[#171D28] text-[#94A3B8] border-[#334155]',
 };
 
 const QUICK_PROMPTS: Record<'VALORANT' | 'PUBG', string[]> = {
@@ -68,10 +76,9 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   const isValo = gameType === 'VALORANT';
 
   const activeTabStyle = isValo
-    ? 'bg-[#ff4655] text-white'
-    : 'bg-amber-500 text-slate-950';
+    ? 'bg-[#FF4655] text-[#EEF2F6]'
+    : 'bg-[#E59A23] text-[#0A0D12]';
 
-  // Làm mới lịch sử trò chuyện khi chuyển sang trận đấu khác
   useEffect(() => {
     setMessages([]);
     setQuestionInput('');
@@ -83,7 +90,6 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
     }
   }, [messages, activeTab]);
 
-  // Tổng hợp vũ khí sử dụng xuyên suốt toàn bộ trận đấu cho tab AI Coach
   const matchWeaponSummary = useMemo(() => {
     const aggMap = new Map<string, WeaponUsageStatUI>();
     for (const r of rounds) {
@@ -119,40 +125,26 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
       content: trimmed,
     };
 
-    const updatedHistory = [...messages, userMsg];
-    setMessages(updatedHistory);
+    setMessages((prev) => [...prev, userMsg]);
     setQuestionInput('');
     setSendingChat(true);
 
     try {
-      const storedToken =
-        localStorage.getItem('tactical_replay_token') || localStorage.getItem('token') || '';
-
-      const res = await fetch(`${API_BASE_URL}/analyze/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(storedToken ? { Authorization: `Bearer ${storedToken}` } : {}),
-        },
-        body: JSON.stringify({
-          matchId,
-          gameType,
-          mapName,
-          question: trimmed,
-          activeRound,
-          rounds,
-          report,
-          history: messages.slice(-6).map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-        }),
+      const data = await askAiCoach({
+        matchId,
+        gameType,
+        mapName,
+        question: trimmed,
+        activeRound,
+        rounds,
+        report,
+        history: messages.slice(-6).map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
       });
 
-      const data = await res.json();
-      const replyText = res.ok
-        ? data.reply
-        : data.error || 'Không thể kết nối tới AI Coach lúc này.';
+      const replyText = data.reply || 'Không thể kết nối tới AI Coach lúc này.';
 
       setMessages((prev) => [
         ...prev,
@@ -162,13 +154,14 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
           content: replyText,
         },
       ]);
-    } catch {
+    } catch (err: any) {
       setMessages((prev) => [
         ...prev,
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
-          content: 'Lỗi kết nối mạng tới máy chủ AI Coach. Vui lòng thử lại.',
+          content:
+            err?.message || 'Lỗi kết nối mạng tới máy chủ AI Coach. Vui lòng thử lại.',
         },
       ]);
     } finally {
@@ -180,15 +173,25 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   const maxRoundWeaponDmg = Math.max(1, ...roundWeapons.map((w) => w.damageDealt));
 
   return (
-    <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 flex flex-col gap-4 h-full">
-      {/* Thanh chuyển 3 tab: Chi tiết Round | Tổng kết | Hỏi AI Coach */}
-      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-950 border border-slate-800">
+    <section
+      aria-label="Bao cao chien thuat va AI Coach"
+      className="bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-4 h-full"
+    >
+      {/* Tab Switcher */}
+      <div
+        role="tablist"
+        aria-label="Che do phan tich"
+        className="grid grid-cols-3 gap-1 p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]"
+      >
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'ROUND'}
           onClick={() => setActiveTab('ROUND')}
-          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
+          className={`py-2 px-2 rounded-[2px] font-mono text-[11px] font-bold transition duration-150 truncate active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] ${
             activeTab === 'ROUND'
               ? activeTabStyle
-              : 'text-slate-400 hover:text-slate-200'
+              : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
           }`}
         >
           {isValo
@@ -196,75 +199,100 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
             : `Bo ${activeRound ? `P${activeRound.roundNumber}` : ''}`}
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'MATCH'}
           onClick={() => setActiveTab('MATCH')}
-          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
+          className={`py-2 px-2 rounded-[2px] font-mono text-[11px] font-bold transition duration-150 truncate active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] ${
             activeTab === 'MATCH'
               ? activeTabStyle
-              : 'text-slate-400 hover:text-slate-200'
+              : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
           }`}
         >
           Tổng kết
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'CHAT'}
           onClick={() => setActiveTab('CHAT')}
-          className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition truncate ${
+          className={`inline-flex items-center justify-center gap-1 py-2 px-2 rounded-[2px] font-mono text-[11px] font-bold transition duration-150 truncate active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] ${
             activeTab === 'CHAT'
               ? activeTabStyle
-              : 'text-slate-400 hover:text-slate-200'
+              : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
           }`}
         >
-          Hỏi AI Coach
+          <Robot size={13} weight="bold" aria-hidden="true" />
+          <span>AI Coach</span>
         </button>
       </div>
 
-      {/* TAB 1: CHI TIẾT TỪNG ROUND / VÒNG BO */}
+      {/* TAB 1: CHI TIET ROUND / PHASE */}
       {activeTab === 'ROUND' && (
-        <div className="space-y-4 text-sm overflow-y-auto max-h-[78vh] pr-1">
+        <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
           {!activeRound ? (
-            <p className="text-slate-500 text-xs leading-relaxed">
-              {isValo
-                ? 'Chọn một trận đấu và round tương ứng để xem phân tích vũ khí, kinh tế và lỗi vị trí.'
-                : 'Chọn một trận đấu và giai đoạn vòng bo để xem chi tiết vũ khí sử dụng và diễn biến giao tranh.'}
-            </p>
+            <div className="border border-dashed border-[#232B3B] bg-[#0A0D12]/60 rounded-[2px] p-5 text-center space-y-2">
+              <Target size={24} className="mx-auto text-[#64748B]" aria-hidden="true" />
+              <p className="text-[#94A3B8] text-xs leading-relaxed">
+                {isValo
+                  ? 'Chọn một trận đấu và round tương ứng để xem phân tích vũ khí, kinh tế và lỗi vị trí.'
+                  : 'Chọn một trận đấu và giai đoạn vòng bo để xem chi tiết vũ khí sử dụng và diễn biến giao tranh.'}
+              </p>
+            </div>
           ) : (
             <>
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-start justify-between gap-2 border-b border-[#232B3B] pb-3">
                 <div>
-                  <h3 className="font-bold text-base text-white">
-                    {isValo ? `Round ${activeRound.roundNumber}` : `Vòng bo Phase ${activeRound.roundNumber}`}
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    K/D/A: {activeRound.kills}/{activeRound.deaths}/{activeRound.assists} • Sát thương:{' '}
-                    {activeRound.damageDealt}
+                  <h2 className="font-display font-bold text-lg text-[#EEF2F6] leading-tight">
+                    {isValo
+                      ? `Round ${String(activeRound.roundNumber).padStart(2, '0')}`
+                      : `Vòng bo Phase ${activeRound.roundNumber}`}
+                  </h2>
+                  <p className="font-mono text-xs text-[#94A3B8] mt-1 tabular-nums">
+                    K/D/A: <span className="text-[#EEF2F6] font-bold">{activeRound.kills}/{activeRound.deaths}/{activeRound.assists}</span> - DMG:{' '}
+                    <span className="text-[#E59A23] font-bold">{activeRound.damageDealt}</span>
                   </p>
                 </div>
                 <span
-                  className={`px-2.5 py-1 rounded text-xs font-bold ${
+                  className={`px-2.5 py-1 rounded-[2px] border font-mono text-[11px] font-bold ${
                     activeRound.result === 'WIN' || activeRound.result === 'SURVIVED'
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-rose-500/20 text-rose-400'
+                      ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
+                      : 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#F43F5E]'
                   }`}
                 >
                   {activeRound.result}
                 </span>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <span className="px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 text-xs font-medium">
-                  {isValo ? 'Kinh tế' : 'Giai đoạn'}: {activeRound.economyType}
-                </span>
-                <span className="px-2.5 py-1 rounded bg-sky-500/20 text-sky-300 text-xs font-medium">
-                  Lối đánh: {activeRound.tacticalStyle}
-                </span>
+              <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+                <div className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
+                  <span className="block text-[10px] text-[#64748B]">
+                    {isValo ? 'KINH TẾ' : 'GIAI ĐOẠN'}
+                  </span>
+                  <span className="text-[#38BDF8] font-bold truncate block mt-0.5">
+                    {activeRound.economyType}
+                  </span>
+                </div>
+                <div className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
+                  <span className="block text-[10px] text-[#64748B]">LỐI ĐÁNH</span>
+                  <span className="text-[#EEF2F6] font-bold truncate block mt-0.5">
+                    {activeRound.tacticalStyle}
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-2">
-                <h4 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">
-                  {isValo ? 'Vũ khí trang bị trong Round' : `Vũ khí sử dụng ở Phase ${activeRound.roundNumber}`}
-                </h4>
+                <h3 className="font-mono font-bold text-[#94A3B8] text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                  <Crosshair size={13} weight="bold" aria-hidden="true" />
+                  <span>
+                    {isValo
+                      ? 'Vũ khí trang bị trong Round'
+                      : `Vũ khí sử dụng ở Phase ${activeRound.roundNumber}`}
+                  </span>
+                </h3>
 
                 {roundWeapons.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic">
+                  <p className="text-xs text-[#64748B] italic py-2">
                     Không ghi nhận giao tranh hoặc đổi vũ khí trong giai đoạn này.
                   </p>
                 ) : (
@@ -280,28 +308,28 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                       return (
                         <div
                           key={w.weaponName}
-                          className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800/90 space-y-1.5"
+                          className="p-2.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-1.5"
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
                               <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold border ${
+                                className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border ${
                                   CATEGORY_BADGE_STYLES[w.category] || CATEGORY_BADGE_STYLES.Other
                                 }`}
                               >
                                 {w.category === 'Throwable' ? 'NÉM' : w.category}
                               </span>
-                              <span className="text-xs font-bold text-slate-100">
+                              <span className="text-xs font-bold text-[#EEF2F6] truncate">
                                 {w.weaponName}
                               </span>
                             </div>
 
                             {w.category === 'Throwable' ? (
-                              <span className="text-[11px] font-semibold text-indigo-300">
-                                Đã ném: {w.throwablesUsed || 1} quả
+                              <span className="font-mono text-[11px] font-bold text-[#38BDF8] tabular-nums">
+                                {w.throwablesUsed || 1} quả
                               </span>
                             ) : (
-                              <span className="text-[11px] font-bold text-amber-400">
+                              <span className="font-mono text-[11px] font-bold text-[#E59A23] tabular-nums">
                                 {w.damageDealt} DMG
                               </span>
                             )}
@@ -309,30 +337,30 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
 
                           {w.category !== 'Throwable' && (
                             <>
-                              <div className="h-1.5 w-full rounded-full bg-slate-900 overflow-hidden">
+                              <div className="h-1 w-full bg-[#171D28] overflow-hidden">
                                 <div
-                                  className={`h-full rounded-full ${
-                                    isValo ? 'bg-[#ff4655]' : 'bg-amber-500'
+                                  className={`h-full ${
+                                    isValo ? 'bg-[#FF4655]' : 'bg-[#E59A23]'
                                   }`}
                                   style={{ width: `${dmgBarPercent}%` }}
                                 />
                               </div>
 
-                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                              <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-[#94A3B8] tabular-nums">
                                 <span>
                                   {w.damageDealt > 0
-                                    ? `${w.hits} trúng đích • HS ${hsRate}%`
-                                    : 'Mang trang bị (chưa khai hỏa)'}
+                                    ? `${w.hits} hit - HS ${hsRate}%`
+                                    : 'Trang bị (chưa khai hỏa)'}
                                 </span>
 
                                 <div className="flex items-center gap-2">
                                   {w.kills > 0 && (
-                                    <span className="text-emerald-400 font-bold">
-                                      {w.kills} Kill
+                                    <span className="text-[#10B981] font-bold">
+                                      {w.kills}K
                                     </span>
                                   )}
                                   {(w.maxKillDistanceMeters || 0) > 0 && (
-                                    <span className="text-sky-400 font-mono">
+                                    <span className="text-[#38BDF8]">
                                       {w.maxKillDistanceMeters}m
                                     </span>
                                   )}
@@ -348,41 +376,47 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               </div>
 
               <div>
-                <h4 className="font-semibold text-emerald-400 text-xs uppercase tracking-wider mb-2">
-                  Điểm làm tốt
-                </h4>
-                <ul className="space-y-1.5 text-slate-300 text-xs">
+                <h3 className="font-mono font-bold text-[#10B981] text-[11px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <CheckCircle size={13} weight="bold" aria-hidden="true" />
+                  <span>Điểm làm tốt</span>
+                </h3>
+                <ul className="space-y-1.5 text-[#EEF2F6] text-xs">
                   {activeRound.strengths.length > 0 ? (
                     activeRound.strengths.map((s, idx) => (
                       <li
                         key={idx}
-                        className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-900/50"
+                        className="p-2.5 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 leading-relaxed"
                       >
                         {s}
                       </li>
                     ))
                   ) : (
-                    <li className="text-slate-500 italic">Không có đột biến nổi bật ở giai đoạn này.</li>
+                    <li className="text-[#64748B] italic text-xs">
+                      Không có đột biến nổi bật ở giai đoạn này.
+                    </li>
                   )}
                 </ul>
               </div>
 
               <div>
-                <h4 className="font-semibold text-amber-400 text-xs uppercase tracking-wider mb-2">
-                  Lỗi chiến thuật cần khắc phục
-                </h4>
-                <ul className="space-y-1.5 text-slate-300 text-xs">
+                <h3 className="font-mono font-bold text-[#E59A23] text-[11px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <ShieldWarning size={13} weight="bold" aria-hidden="true" />
+                  <span>Lỗi chiến thuật cần khắc phục</span>
+                </h3>
+                <ul className="space-y-1.5 text-[#EEF2F6] text-xs">
                   {activeRound.mistakes.length > 0 ? (
                     activeRound.mistakes.map((m, idx) => (
                       <li
                         key={idx}
-                        className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-900/50"
+                        className="p-2.5 rounded-[2px] bg-[#E59A23]/10 border border-[#E59A23]/30 leading-relaxed"
                       >
                         {m}
                       </li>
                     ))
                   ) : (
-                    <li className="text-slate-500 italic">Xử lý ổn định, không mắc lỗi vị trí.</li>
+                    <li className="text-[#64748B] italic text-xs">
+                      Xử lý ổn định, không mắc lỗi vị trí.
+                    </li>
                   )}
                 </ul>
               </div>
@@ -391,53 +425,58 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
-      {/* TAB 2: TỔNG KẾT AI COACH */}
+      {/* TAB 2: TONG KET AI COACH */}
       {activeTab === 'MATCH' && (
-        <div className="space-y-4 text-sm overflow-y-auto max-h-[78vh] pr-1">
+        <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
           {!report ? (
-            <p className="text-slate-500 text-xs">
+            <p className="text-[#64748B] text-xs leading-relaxed">
               Chọn một trận đấu đã phân tích để xem đánh giá tổng quát từ AI Coach.
             </p>
           ) : (
             <>
-              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold text-slate-300">Đánh giá tổng quan</p>
-                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">{report.coachCommentary}</p>
+              <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="font-display text-sm font-bold text-[#EEF2F6]">
+                    Đánh giá tổng quan
+                  </h2>
+                  <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[65ch]">
+                    {report.coachCommentary}
+                  </p>
                 </div>
                 <div
-                  className={`ml-3 shrink-0 h-12 w-12 rounded-xl border flex items-center justify-center text-lg font-extrabold ${
+                  className={`shrink-0 px-3 py-2 rounded-[2px] border text-center font-mono ${
                     isValo
-                      ? 'bg-[#ff4655]/20 border-[#ff4655]/40 text-[#ff4655]'
-                      : 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                      ? 'bg-[#FF4655]/15 border-[#FF4655]/50 text-[#FF4655]'
+                      : 'bg-[#E59A23]/15 border-[#E59A23]/50 text-[#E59A23]'
                   }`}
                 >
-                  {report.overallScore}
+                  <span className="block text-[9px] text-[#94A3B8]">SCORE</span>
+                  <span className="text-lg font-bold tabular-nums">{report.overallScore}</span>
                 </div>
               </div>
 
               {matchWeaponSummary.length > 0 && (
                 <div>
-                  <h4 className="font-semibold text-amber-400 text-xs uppercase tracking-wider mb-2">
+                  <h3 className="font-mono font-bold text-[#E59A23] text-[11px] uppercase tracking-wider mb-2">
                     Thống kê vũ khí cả trận
-                  </h4>
+                  </h3>
                   <div className="space-y-1.5">
                     {matchWeaponSummary.slice(0, 5).map((w) => (
                       <div
                         key={w.weaponName}
-                        className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between text-xs"
+                        className="px-3 py-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] flex items-center justify-between text-xs"
                       >
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-200">{w.weaponName}</span>
-                          <span className="text-[10px] text-slate-500">{w.category}</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-bold text-[#EEF2F6] truncate">{w.weaponName}</span>
+                          <span className="font-mono text-[10px] text-[#64748B]">{w.category}</span>
                         </div>
-                        <div className="text-right text-[11px] text-slate-300">
+                        <div className="font-mono text-[11px] text-[#94A3B8] tabular-nums shrink-0">
                           {w.category === 'Throwable' ? (
                             <span>{w.throwablesUsed || 0} lần dùng</span>
                           ) : (
                             <span>
-                              <strong className="text-amber-400">{w.damageDealt}</strong> DMG •{' '}
-                              <strong className="text-emerald-400">{w.kills}</strong>K
+                              <strong className="text-[#E59A23]">{w.damageDealt}</strong> DMG -{' '}
+                              <strong className="text-[#10B981]">{w.kills}</strong>K
                             </span>
                           )}
                         </div>
@@ -448,35 +487,51 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               )}
 
               <div>
-                <h4 className="font-semibold text-emerald-400 text-xs uppercase tracking-wider mb-1.5">
+                <h3 className="font-mono font-bold text-[#10B981] text-[11px] uppercase tracking-wider mb-1.5">
                   Điểm mạnh nổi bật
-                </h4>
-                <ul className="list-disc pl-4 space-y-1 text-xs text-slate-300">
+                </h3>
+                <ul className="space-y-1.5 text-xs text-[#EEF2F6]">
                   {report.strengthsSummary.map((item, idx) => (
-                    <li key={idx}>{item}</li>
+                    <li
+                      key={idx}
+                      className="p-2 rounded-[2px] bg-[#0A0D12] border-l-2 border-[#10B981] leading-relaxed"
+                    >
+                      {item}
+                    </li>
                   ))}
                 </ul>
               </div>
 
               <div>
-                <h4 className="font-semibold text-rose-400 text-xs uppercase tracking-wider mb-1.5">
+                <h3 className="font-mono font-bold text-[#F43F5E] text-[11px] uppercase tracking-wider mb-1.5">
                   Điểm yếu cần cải thiện
-                </h4>
-                <ul className="list-disc pl-4 space-y-1 text-xs text-slate-300">
+                </h3>
+                <ul className="space-y-1.5 text-xs text-[#EEF2F6]">
                   {report.weaknessesSummary.map((item, idx) => (
-                    <li key={idx}>{item}</li>
+                    <li
+                      key={idx}
+                      className="p-2 rounded-[2px] bg-[#0A0D12] border-l-2 border-[#F43F5E] leading-relaxed"
+                    >
+                      {item}
+                    </li>
                   ))}
                 </ul>
               </div>
 
               {report.recommendedDrills.length > 0 && (
                 <div>
-                  <h4 className="font-semibold text-sky-400 text-xs uppercase tracking-wider mb-1.5">
-                    Bài tập đề xuất
-                  </h4>
-                  <ul className="list-disc pl-4 space-y-1 text-xs text-slate-300">
+                  <h3 className="font-mono font-bold text-[#38BDF8] text-[11px] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                    <ListChecks size={13} weight="bold" aria-hidden="true" />
+                    <span>Bài tập đề xuất</span>
+                  </h3>
+                  <ul className="space-y-1.5 text-xs text-[#94A3B8]">
                     {report.recommendedDrills.map((drill, idx) => (
-                      <li key={idx}>{drill}</li>
+                      <li
+                        key={idx}
+                        className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] leading-relaxed"
+                      >
+                        {drill}
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -486,32 +541,34 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
-      {/* TAB 3: HỎI ĐÁP CHIẾN THUẬT TRỰC TIẾP VỚI AI COACH */}
+      {/* TAB 3: HOI DAP CHIEN THUAT VOI AI COACH */}
       {activeTab === 'CHAT' && (
-        <div className="flex flex-col flex-1 min-h-[65vh] max-h-[78vh] justify-between gap-3">
+        <div className="flex flex-col flex-1 min-h-[62vh] max-h-[76vh] justify-between gap-3">
           {!matchId ? (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-[#64748B]">
               Chọn một trận đấu ở danh sách bên trái để bắt đầu hỏi đáp chiến thuật với AI Coach.
             </p>
           ) : (
             <>
-              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              <div className="flex-1 overflow-y-auto tactical-scrollbar space-y-2.5 pr-1">
                 {messages.length === 0 ? (
                   <div className="space-y-3">
-                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 leading-relaxed">
-                      AI Coach đã đọc dữ liệu <strong className="text-white">{rounds.length}</strong>{' '}
+                    <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#94A3B8] leading-relaxed">
+                      AI Coach đã đọc dữ liệu <strong className="text-[#EEF2F6] font-mono">{rounds.length}</strong>{' '}
                       {isValo ? 'round' : 'giai đoạn vòng bo'} của trận{' '}
-                      <strong className="text-white">{mapName || gameType}</strong>. Bạn muốn mổ xẻ tình huống nào?
+                      <strong className="text-[#EEF2F6]">{mapName || gameType}</strong>. Bạn muốn phân tích tình huống nào?
                     </div>
 
                     <div className="space-y-1.5">
-                      <p className="text-[11px] font-semibold text-slate-500">Gợi ý câu hỏi nhanh:</p>
+                      <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                        Gợi ý câu hỏi nhanh
+                      </p>
                       {QUICK_PROMPTS[gameType].map((prompt) => (
                         <button
                           key={prompt}
                           type="button"
                           onClick={() => void handleAskCoach(prompt)}
-                          className="w-full text-left p-2.5 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 transition"
+                          className="w-full text-left p-2.5 rounded-[2px] bg-[#0A0D12] hover:bg-[#171D28] border border-[#232B3B] hover:border-[#334155] text-xs text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                         >
                           {prompt}
                         </button>
@@ -522,12 +579,12 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   messages.map((m) => (
                     <div
                       key={m.id}
-                      className={`p-3 rounded-xl text-xs leading-relaxed whitespace-pre-line ${
+                      className={`p-3 rounded-[2px] text-xs leading-relaxed whitespace-pre-line ${
                         m.role === 'user'
                           ? isValo
-                            ? 'bg-[#ff4655]/20 border border-[#ff4655]/40 text-white ml-4'
-                            : 'bg-amber-500/20 border border-amber-500/40 text-amber-100 ml-4'
-                          : 'bg-slate-950 border border-slate-800 text-slate-200 mr-2'
+                            ? 'bg-[#FF4655]/15 border border-[#FF4655]/40 text-[#EEF2F6] ml-4'
+                            : 'bg-[#E59A23]/15 border border-[#E59A23]/40 text-[#EEF2F6] ml-4'
+                          : 'bg-[#0A0D12] border border-[#232B3B] text-[#EEF2F6] mr-2'
                       }`}
                     >
                       {m.content.split(/(\*\*.*?\*\*)/g).map((part, i) =>
@@ -544,8 +601,9 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 )}
 
                 {sendingChat && (
-                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-400 italic">
-                    AI Coach đang phân tích dữ liệu trận đấu...
+                  <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-2">
+                    <div className="h-2.5 w-3/4 bg-[#171D28] animate-pulse rounded-[2px]" />
+                    <div className="h-2.5 w-1/2 bg-[#171D28] animate-pulse rounded-[2px]" />
                   </div>
                 )}
                 <div ref={chatEndRef} />
@@ -556,32 +614,38 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   e.preventDefault();
                   void handleAskCoach(questionInput);
                 }}
-                className="flex gap-2 pt-2 border-t border-slate-800"
+                className="flex gap-2 pt-2.5 border-t border-[#232B3B]"
               >
+                <label htmlFor="ai-coach-question" className="sr-only">
+                  Câu hỏi chiến thuật gửi AI Coach
+                </label>
                 <input
+                  id="ai-coach-question"
                   type="text"
                   value={questionInput}
                   onChange={(e) => setQuestionInput(e.target.value)}
                   placeholder="Hỏi về cách bắn, chọn súng, di chuyển..."
                   disabled={sendingChat}
-                  className="flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-slate-600"
+                  className="flex-1 min-w-0 px-3 py-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#EEF2F6] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
                 />
                 <button
                   type="submit"
+                  aria-label="Gửi câu hỏi cho AI Coach"
                   disabled={sendingChat || !questionInput.trim()}
-                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-40 ${
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[2px] text-xs font-bold transition duration-150 shrink-0 disabled:opacity-40 active:translate-y-[1px] ${
                     isValo
-                      ? 'bg-[#ff4655] hover:bg-rose-500 text-white'
-                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                      ? 'bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6]'
+                      : 'bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12]'
                   }`}
                 >
-                  Gửi
+                  <PaperPlaneRight size={14} weight="bold" aria-hidden="true" />
+                  <span>Gửi</span>
                 </button>
               </form>
             </>
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 };

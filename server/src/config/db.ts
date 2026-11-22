@@ -25,10 +25,41 @@ export const dbPool = mysql.createPool({
       }),
 });
 
+let authSessionsReadyPromise: Promise<void> | null = null;
+
+export async function ensureAuthSessionsTable(): Promise<void> {
+  if (!authSessionsReadyPromise) {
+    authSessionsReadyPromise = dbPool
+      .query(
+        `CREATE TABLE IF NOT EXISTS auth_sessions (
+          session_id VARCHAR(64) PRIMARY KEY,
+          token TEXT NULL,
+          error_message TEXT NULL,
+          expires_at DATETIME NOT NULL
+        )`
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        authSessionsReadyPromise = null;
+        throw err;
+      });
+  }
+  await authSessionsReadyPromise;
+}
+
 export async function testDatabaseConnection(): Promise<void> {
   try {
     const connection = await dbPool.getConnection();
     console.log(`Kết nối MySQL (${process.env.DB_NAME || 'fps_tactical_coach'}) thành công.`);
+
+    await connection.query(
+      `CREATE TABLE IF NOT EXISTS auth_sessions (
+        session_id VARCHAR(64) PRIMARY KEY,
+        token TEXT NULL,
+        error_message TEXT NULL,
+        expires_at DATETIME NOT NULL
+      )`
+    );
 
     const alterQueries = [
       'ALTER TABLE users ADD COLUMN steam_id VARCHAR(50) UNIQUE NULL AFTER riot_refresh_token',

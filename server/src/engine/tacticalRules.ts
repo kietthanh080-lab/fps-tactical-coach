@@ -146,7 +146,7 @@ export function resolvePubgWeapon(rawCode?: string): {
 
   // Bỏ qua sát thương môi trường (bo đốt, ngã, xe tông)
   if (
-    trimmed.includes('Bluezone') && !trimmed.includes('Grenade') ||
+    (trimmed.includes('Bluezone') && !trimmed.includes('Grenade')) ||
     trimmed.includes('Fall') ||
     trimmed.includes('Drown') ||
     trimmed.includes('RedZone')

@@ -1,7 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowCounterClockwise,
+  ArrowUpRight,
+  Circle,
+  FastForward,
+  Pause,
+  PencilSimple,
+  Play,
+  Rewind,
+  Trash,
+  UploadSimple,
+  VideoCamera,
+} from '@phosphor-icons/react';
 import { AnalyzedRoundUI, RoundTimeline } from './RoundTimeline';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+import { uploadMatchHighlight } from '../services/localDb';
 
 interface ReplayPlayerProps {
   gameType: 'VALORANT' | 'PUBG';
@@ -36,10 +48,10 @@ interface TimelineMarker {
 }
 
 const TACTICAL_COLORS = [
-  { name: 'Đỏ (Vị trí địch / Cảnh báo)', value: '#ef4444' },
-  { name: 'Xanh lá (Hướng đẩy / Entry)', value: '#10b981' },
-  { name: 'Vàng (Smoke / Flash / Bo)', value: '#eab308' },
-  { name: 'Xanh dương (Góc kê tâm)', value: '#06b6d4' },
+  { name: 'Đỏ (Vị trí địch / Cảnh báo)', value: '#EF4444' },
+  { name: 'Xanh lá (Hướng đẩy / Entry)', value: '#10B981' },
+  { name: 'Vàng (Smoke / Flash / Bo)', value: '#E59A23' },
+  { name: 'Xanh dương (Góc kê tâm)', value: '#38BDF8' },
 ];
 
 const formatTime = (seconds: number): string => {
@@ -69,6 +81,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
   const [localPreviewSrc, setLocalPreviewSrc] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -76,10 +89,9 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [hoveredMarker, setHoveredMarker] = useState<TimelineMarker | null>(null);
 
-  // State & Ref cho Bảng vẽ chiến thuật (Telestrator)
   const [drawMode, setDrawMode] = useState(false);
   const [activeTool, setActiveTool] = useState<DrawTool>('arrow');
-  const [activeColor, setActiveColor] = useState<string>('#ef4444');
+  const [activeColor, setActiveColor] = useState<string>('#EF4444');
   const [shapes, setShapes] = useState<DrawShape[]>([]);
   const [currentShape, setCurrentShape] = useState<DrawShape | null>(null);
 
@@ -92,9 +104,17 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
   const activeVideoUrl = localPreviewSrc || videoSrc;
 
-  // Reset bản xem trước cục bộ và nét vẽ khi đổi sang trận đấu khác
+  useEffect(() => {
+    return () => {
+      if (localPreviewSrc && localPreviewSrc.startsWith('blob:')) {
+        URL.revokeObjectURL(localPreviewSrc);
+      }
+    };
+  }, [localPreviewSrc]);
+
   useEffect(() => {
     setLocalPreviewSrc(null);
+    setUploadError(null);
     setShapes([]);
     setCurrentShape(null);
     setIsPlaying(false);
@@ -221,7 +241,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     }
   }, []);
 
-  // Phím tắt điều khiển nhanh (Space: Phát/Dừng, Mũi tên: Tua 5s, D: Bật/tắt bút vẽ)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -245,7 +264,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeVideoUrl, togglePlay, seekTo]);
 
-  // Tính toán các chấm mốc sự kiện trên thanh tua từ dữ liệu rounds của trận đấu
   const timelineMarkers = useMemo<TimelineMarker[]>(() => {
     if (duration <= 0 || rounds.length === 0) return [];
 
@@ -265,7 +283,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           ? `${prefix}: ${r.kills} Kill (${r.damageDealt} DMG)`
           : r.deaths > 0
           ? `${prefix}: Bị hạ gục (${r.result})`
-          : `${prefix}: ${r.result} • ${r.economyType}`;
+          : `${prefix}: ${r.result} - ${r.economyType}`;
 
       return {
         roundNumber: r.roundNumber,
@@ -346,30 +364,19 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     const objectUrl = URL.createObjectURL(file);
     setLocalPreviewSrc(objectUrl);
     setUploading(true);
+    setUploadError(null);
 
     try {
-      const formData = new FormData();
-      formData.append('video', file);
-      formData.append('matchId', matchId);
-
-      const storedToken =
-        localStorage.getItem('tactical_replay_token') || localStorage.getItem('token') || '';
-
-      const res = await fetch(`${API_BASE_URL}/analyze/upload-highlight`, {
-        method: 'POST',
-        headers: storedToken ? { Authorization: `Bearer ${storedToken}` } : undefined,
-        body: formData,
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const finalUrl = data.cloudUrl || data.videoUrl || objectUrl;
-        onHighlightSaved?.(finalUrl);
-      } else {
-        onHighlightSaved?.(objectUrl);
+      const data = await uploadMatchHighlight(matchId, file, file.name);
+      if (data.cloudVideoUrl) {
+        onHighlightSaved?.(data.cloudVideoUrl);
       }
-    } catch {
-      onHighlightSaved?.(objectUrl);
+    } catch (err: any) {
+      setUploadError(
+        err?.message
+          ? `Chỉ đang xem tạm cục bộ (chưa lưu lên server: ${err.message})`
+          : 'Chỉ đang xem tạm cục bộ, không thể tải video lên máy chủ.'
+      );
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -377,25 +384,25 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   };
 
   const getDotClass = (type: TimelineMarker['type']) => {
-    if (type === 'kill') return 'bg-emerald-400 ring-emerald-400/40';
-    if (type === 'death') return 'bg-rose-500 ring-rose-500/40';
-    return 'bg-amber-400 ring-amber-400/40';
+    if (type === 'kill') return 'bg-[#10B981] ring-[#10B981]/35';
+    if (type === 'death') return 'bg-[#F43F5E] ring-[#F43F5E]/35';
+    return 'bg-[#E59A23] ring-[#E59A23]/35';
   };
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 shadow-xl space-y-3">
-        {/* Thanh tiêu đề & Bộ công cụ Bút vẽ chiến thuật */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+      <div className="rounded-[4px] border border-[#232B3B] bg-[#10141C] p-4 space-y-3">
+        {/* Thanh tieu de va Telestrator */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232B3B] pb-3">
+          <div className="flex items-center gap-2.5 min-w-0">
             <span
-              className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-                isValo ? 'bg-[#ff4655]' : 'bg-amber-400'
+              className={`h-2.5 w-2.5 shrink-0 rounded-[1px] ${
+                isValo ? 'bg-[#FF4655]' : 'bg-[#E59A23]'
               }`}
             />
-            <h2 className="text-sm font-bold text-white truncate">
+            <h2 className="font-display text-base font-bold text-[#EEF2F6] truncate">
               {matchTitle || 'Trình phát Replay & Phân tích Chiến thuật'}
             </h2>
           </div>
@@ -403,7 +410,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             {hasSelectedMatch && (
               <>
+                <label htmlFor="highlight-file-upload" className="sr-only">
+                  Chọn video highlight
+                </label>
                 <input
+                  id="highlight-file-upload"
                   ref={fileInputRef}
                   type="file"
                   accept="video/*"
@@ -414,13 +425,16 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   type="button"
                   disabled={uploading}
                   onClick={() => fileInputRef.current?.click()}
-                  className="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 text-xs font-semibold text-[#EEF2F6] transition duration-150 disabled:opacity-50 active:translate-y-[1px]"
                 >
-                  {uploading
-                    ? 'Đang lưu Highlight...'
-                    : activeVideoUrl
-                    ? 'Đổi video Highlight'
-                    : '+ Gắn video Highlight'}
+                  <UploadSimple size={14} weight="bold" aria-hidden="true" />
+                  <span>
+                    {uploading
+                      ? 'Đang tải lên...'
+                      : activeVideoUrl
+                      ? 'Đổi video Highlight'
+                      : 'Gắn video Highlight'}
+                  </span>
                 </button>
               </>
             )}
@@ -430,57 +444,69 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 type="button"
                 onClick={() => setDrawMode((prev) => !prev)}
                 title="Phím tắt: D"
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-1.5 rounded-[2px] border px-3 py-1.5 text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                   drawMode
                     ? isValo
-                      ? 'bg-[#ff4655] text-white'
-                      : 'bg-amber-500 text-slate-950'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      ? 'bg-[#FF4655] border-[#FF4655] text-[#EEF2F6]'
+                      : 'bg-[#E59A23] border-[#E59A23] text-[#0A0D12]'
+                    : 'bg-[#171D28] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B]'
                 }`}
               >
-                {drawMode ? 'Đang bật Bút Vẽ (D)' : 'Vẽ chiến thuật (D)'}
+                <PencilSimple size={14} weight="bold" aria-hidden="true" />
+                <span>{drawMode ? 'Đang bật Bút Vẽ (D)' : 'Vẽ chiến thuật (D)'}</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* Thanh công cụ phụ khi bật Bút vẽ chiến thuật */}
+        {uploadError && (
+          <div className="rounded-[2px] border border-[#E59A23]/40 bg-[#E59A23]/10 px-3 py-2 text-xs text-[#E59A23]">
+            {uploadError}
+          </div>
+        )}
+
+        {/* Thanh cong cu Telestrator */}
         {activeVideoUrl && drawMode && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-950/90 border border-slate-800 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] px-3 py-2">
             <div className="flex items-center gap-1.5">
               {(
                 [
-                  { id: 'arrow', label: 'Mũi tên' },
-                  { id: 'circle', label: 'Khoanh vùng' },
-                  { id: 'pen', label: 'Bút tự do' },
+                  { id: 'arrow', label: 'Mũi tên', icon: ArrowUpRight },
+                  { id: 'circle', label: 'Khoanh vùng', icon: Circle },
+                  { id: 'pen', label: 'Bút tự do', icon: PencilSimple },
                 ] as const
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setActiveTool(item.id)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                    activeTool === item.id
-                      ? 'bg-slate-700 text-white'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
+              ).map((item) => {
+                const IconComp = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveTool(item.id)}
+                    className={`inline-flex items-center gap-1 rounded-[2px] px-2.5 py-1 text-xs font-medium transition duration-150 ${
+                      activeTool === item.id
+                        ? 'bg-[#232B3B] text-[#EEF2F6]'
+                        : 'text-[#94A3B8] hover:text-[#EEF2F6]'
+                    }`}
+                  >
+                    <IconComp size={13} weight="bold" aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 px-2">
+              <div className="flex items-center gap-2 px-2">
                 {TACTICAL_COLORS.map((c) => (
                   <button
                     key={c.value}
                     type="button"
+                    aria-label={c.name}
                     title={c.name}
                     onClick={() => setActiveColor(c.value)}
                     style={{ backgroundColor: c.value }}
-                    className={`h-4 w-4 rounded-full transition ${
-                      activeColor === c.value ? 'scale-125 ring-2 ring-white' : 'opacity-70'
+                    className={`h-4 w-4 rounded-[2px] transition ${
+                      activeColor === c.value ? 'scale-110 ring-2 ring-[#EEF2F6]' : 'opacity-70'
                     }`}
                   />
                 ))}
@@ -490,59 +516,74 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 type="button"
                 onClick={() => setShapes((prev) => prev.slice(0, -1))}
                 disabled={shapes.length === 0}
-                className="rounded-md bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#94A3B8] hover:text-[#EEF2F6] disabled:opacity-40"
               >
-                Hoàn tác
+                <ArrowCounterClockwise size={12} weight="bold" aria-hidden="true" />
+                <span>Hoàn tác</span>
               </button>
               <button
                 type="button"
                 onClick={() => setShapes([])}
                 disabled={shapes.length === 0}
-                className="rounded-md bg-slate-800 px-2.5 py-1 text-xs text-rose-400 hover:bg-slate-700 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#F43F5E] hover:bg-[#232B3B] disabled:opacity-40"
               >
-                Xóa nét
+                <Trash size={12} weight="bold" aria-hidden="true" />
+                <span>Xóa nét</span>
               </button>
             </div>
           </div>
         )}
 
-        {/* Khung hiển thị Video + Canvas Telestrator */}
+        {/* Khung hien thi Video + Telestrator */}
         {!hasSelectedMatch ? (
-          <div className="aspect-video w-full rounded-lg border border-dashed border-slate-800 bg-slate-950/60 flex items-center justify-center p-6 text-center text-xs text-slate-500">
-            Chọn một trận đấu ở danh sách bên trái để xem video replay và phân tích chiến thuật.
+          <div className="aspect-video w-full rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] flex flex-col items-center justify-center gap-2 p-6 text-center">
+            <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
+            <p className="text-xs text-[#94A3B8] max-w-[45ch]">
+              Chọn một trận đấu ở danh sách bên trái để xem video replay và phân tích chiến thuật.
+            </p>
           </div>
         ) : !activeVideoUrl ? (
-          <div className="aspect-video w-full rounded-lg border border-dashed border-slate-800 bg-slate-950/60 flex flex-col items-center justify-center gap-3 p-6 text-center">
-            <p className="text-xs text-slate-400 max-w-md leading-relaxed">
-              Trận đấu này chưa có video highlight tự động từ Overwolf. Bạn có thể chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh và bút vẽ chiến thuật.
+          <div className="aspect-video w-full rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
+            <p className="text-xs text-[#94A3B8] max-w-[55ch] leading-relaxed">
+              Trận đấu này chưa có video highlight tự động từ Overwolf. Chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh và bút vẽ chiến thuật.
             </p>
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-[2px] text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                 isValo
-                  ? 'bg-[#ff4655] hover:bg-rose-500 text-white'
-                  : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                  ? 'bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6]'
+                  : 'bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12]'
               }`}
             >
-              Chọn file video Highlight (.mp4)
+              <UploadSimple size={14} weight="bold" aria-hidden="true" />
+              <span>Chọn file video Highlight (.mp4)</span>
             </button>
           </div>
         ) : (
           <>
             <div
               ref={containerRef}
-              className="relative aspect-video w-full overflow-hidden rounded-lg bg-black"
+              className="relative aspect-video w-full overflow-hidden rounded-[2px] border border-[#232B3B] bg-[#0A0D12]"
             >
               <video
                 ref={videoRef}
                 src={activeVideoUrl}
                 className="h-full w-full object-contain"
-                onClick={togglePlay}
                 onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
                 onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
                 onEnded={() => setIsPlaying(false)}
               />
+
+              {!drawMode && (
+                <button
+                  type="button"
+                  aria-label={isPlaying ? 'Tạm dừng video replay' : 'Phát video replay'}
+                  onClick={togglePlay}
+                  className="absolute inset-0 h-full w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#38BDF8]"
+                />
+              )}
 
               <canvas
                 ref={canvasRef}
@@ -554,11 +595,17 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   drawMode ? 'cursor-crosshair pointer-events-auto' : 'pointer-events-none'
                 }`}
               />
+
+              {/* HUD Corner Reticle Marks */}
+              <span className="pointer-events-none absolute top-2 left-2 h-2.5 w-2.5 border-t border-l border-[#94A3B8]/40" />
+              <span className="pointer-events-none absolute top-2 right-2 h-2.5 w-2.5 border-t border-r border-[#94A3B8]/40" />
+              <span className="pointer-events-none absolute bottom-2 left-2 h-2.5 w-2.5 border-b border-l border-[#94A3B8]/40" />
+              <span className="pointer-events-none absolute bottom-2 right-2 h-2.5 w-2.5 border-b border-r border-[#94A3B8]/40" />
             </div>
 
-            {/* Thanh tua Timeline kèm các chấm mốc Kill / Death / Objective */}
-            <div className="pt-1">
-              <div className="relative mb-2 flex h-6 items-center">
+            {/* Thanh tua Timeline kem cac moc su kien */}
+            <div className="pt-1 space-y-2.5">
+              <div className="relative flex h-6 items-center">
                 {hoveredMarker && (
                   <div
                     style={{
@@ -568,27 +615,31 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                           : 0
                       }%`,
                     }}
-                    className="pointer-events-none absolute -top-9 z-20 -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-white shadow-lg"
+                    className="pointer-events-none absolute -top-9 z-20 -translate-x-1/2 whitespace-nowrap rounded-[2px] border border-[#334155] bg-[#0A0D12] px-2.5 py-1 text-xs text-[#EEF2F6] shadow-lg"
                   >
-                    <span className="font-mono text-amber-400">
+                    <span className="font-mono text-[#E59A23] tabular-nums">
                       {formatTime(hoveredMarker.timestampSec)}
                     </span>{' '}
-                    • {hoveredMarker.label}
+                    - {hoveredMarker.label}
                   </div>
                 )}
 
-                <div
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const ratio = (e.clientX - rect.left) / rect.width;
-                    seekTo(ratio * duration);
-                  }}
-                  className="relative h-2 w-full cursor-pointer rounded-full bg-slate-800"
-                >
+                <div className="relative h-2 w-full rounded-[1px] bg-[#171D28] border border-[#232B3B]">
+                  <button
+                    type="button"
+                    aria-label="Tua thời gian phát video"
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const ratio = (e.clientX - rect.left) / rect.width;
+                      seekTo(ratio * duration);
+                    }}
+                    className="absolute inset-0 h-full w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8]"
+                  />
+
                   <div
                     style={{ width: `${progressPct}%` }}
-                    className={`h-full rounded-full transition-all duration-75 ${
-                      isValo ? 'bg-[#ff4655]' : 'bg-amber-500'
+                    className={`pointer-events-none h-full transition-all duration-75 ${
+                      isValo ? 'bg-[#FF4655]' : 'bg-[#E59A23]'
                     }`}
                   />
 
@@ -602,6 +653,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                         <button
                           key={mk.roundNumber}
                           type="button"
+                          aria-label={mk.label}
                           onClick={(e) => {
                             e.stopPropagation();
                             handleSelectRoundAndSeek(mk.roundNumber);
@@ -618,50 +670,57 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8]">
+                <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={togglePlay}
-                    className="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-white hover:bg-slate-700"
+                    className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                   >
-                    {isPlaying ? 'Tạm dừng' : 'Phát'}
+                    {isPlaying ? (
+                      <Pause size={13} weight="bold" aria-hidden="true" />
+                    ) : (
+                      <Play size={13} weight="bold" aria-hidden="true" />
+                    )}
+                    <span>{isPlaying ? 'Tạm dừng' : 'Phát'}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => seekTo(currentTime - 5)}
-                    className="rounded-lg bg-slate-800 px-2.5 py-1.5 hover:bg-slate-700"
+                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono hover:text-[#EEF2F6]"
                   >
-                    -5s
+                    <Rewind size={12} weight="bold" aria-hidden="true" />
+                    <span>5s</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => seekTo(currentTime + 5)}
-                    className="rounded-lg bg-slate-800 px-2.5 py-1.5 hover:bg-slate-700"
+                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono hover:text-[#EEF2F6]"
                   >
-                    +5s
+                    <span>5s</span>
+                    <FastForward size={12} weight="bold" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
                     onClick={cyclePlaybackRate}
-                    className="rounded-lg bg-slate-800 px-2.5 py-1.5 font-mono hover:bg-slate-700"
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono text-[#EEF2F6] tabular-nums"
                   >
                     {playbackRate}x
                   </button>
-                  <span className="ml-1 font-mono text-slate-400">
+                  <span className="ml-2 font-mono text-[#94A3B8] tabular-nums">
                     {formatTime(currentTime)} / {formatTime(duration)}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3 text-[11px] text-slate-400">
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> Có Kill
+                <div className="flex items-center gap-3 font-mono text-[11px] text-[#94A3B8]">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-[#10B981]" /> Có Kill
                   </span>
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-rose-500" /> Bị hạ gục
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-[#F43F5E]" /> Bị hạ gục
                   </span>
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-amber-400" /> Thắng / Vòng bo
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-[#E59A23]" /> Thắng / Vòng bo
                   </span>
                 </div>
               </div>
@@ -670,7 +729,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
         )}
       </div>
 
-      {/* Thanh chọn các Round / Giai đoạn vòng bo bên dưới trình phát */}
       {hasSelectedMatch && (
         <RoundTimeline
           gameType={gameType}

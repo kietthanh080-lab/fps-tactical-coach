@@ -5,7 +5,7 @@ import path from 'path';
 import multer from 'multer';
 import { RowDataPacket } from 'mysql2';
 import { dbPool } from '../config/db';
-import { authenticateToken, AuthRequest } from './auth';
+import { authenticateToken, AuthRequest, isConfiguredEnv } from './auth';
 import {
   analyzeRoundTactics,
   parsePubgTelemetryToRounds,
@@ -87,6 +87,47 @@ const VALORANT_WEAPONS: Record<
   '63E6C2B6-4A8E-869C-3D4C-E38355226584': { name: 'Odin', category: 'LMG' },
 };
 
+const VALORANT_MAP_NAMES: Record<string, string> = {
+  '/Game/Maps/Ascent/Ascent': 'Ascent',
+  '/Game/Maps/Bonsai/Bonsai': 'Split',
+  '/Game/Maps/Canyon/Canyon': 'Fracture',
+  '/Game/Maps/Duality/Duality': 'Bind',
+  '/Game/Maps/Foxtrot/Foxtrot': 'Breeze',
+  '/Game/Maps/Infinity/Infinity': 'Abyss',
+  '/Game/Maps/Jam/Jam': 'Lotus',
+  '/Game/Maps/Juliett/Juliett': 'Sunset',
+  '/Game/Maps/Pitt/Pitt': 'Pearl',
+  '/Game/Maps/Port/Port': 'Icebox',
+  '/Game/Maps/Rook/Rook': 'Corrode',
+  '/Game/Maps/Triad/Triad': 'Haven',
+};
+
+function resolveValorantMapName(rawMapId?: string): string {
+  const mapStr = String(rawMapId || '').trim();
+  if (!mapStr) return 'Unknown Map';
+  if (VALORANT_MAP_NAMES[mapStr]) return VALORANT_MAP_NAMES[mapStr];
+  const lastSegment = mapStr.split('/').filter(Boolean).pop();
+  return lastSegment || mapStr;
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isSafeVideoUrl(url: string): boolean {
+  const trimmed = url.trim();
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('/uploads/')
+  );
+}
+
 function safeParseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'object') return value as T;
@@ -124,7 +165,8 @@ async function enforceRollingMatchLimit(
   if (rows.length <= maxKeep) return;
 
   const evicted = rows.slice(maxKeep);
-  const evictedIds = evicted.map((r) => String(r.match_id));
+  const evictedIds = evicted.map((r) => String(r.match_id)).filter(Boolean);
+  if (evictedIds.length === 0) return;
 
   for (const row of evicted) {
     const url = String(row.cloud_video_url || '');
@@ -157,12 +199,38 @@ function parseValorantMatchToRounds(
 
   return roundResults.map((rr: any, index: number) => {
     const roundNum = (rr.roundNum ?? index) + 1;
-    const myStats = (rr.playerStats || []).find((ps: any) => ps.puuid === targetPuuid);
+    const roundPlayerStats: any[] = rr.playerStats || [];
+    const myStats = roundPlayerStats.find((ps: any) => ps.puuid === targetPuuid);
     const kills = myStats?.kills?.length || 0;
-    const damageDealt = (myStats?.damage || []).reduce(
+
+    const damageEntries: any[] = myStats?.damage || [];
+    const damageDealt = damageEntries.reduce(
       (sum: number, d: any) => sum + Number(d.damage || 0),
       0
     );
+    const headshots = damageEntries.reduce(
+      (sum: number, d: any) => sum + Number(d.headshots || 0),
+      0
+    );
+    const hits = damageEntries.reduce(
+      (sum: number, d: any) =>
+        sum + Number(d.headshots || 0) + Number(d.bodyshots || 0) + Number(d.legshots || 0),
+      0
+    );
+
+    const allKillsInRound: any[] = roundPlayerStats.flatMap((ps: any) => ps.kills || []);
+    const assists = allKillsInRound.filter(
+      (k: any) => Array.isArray(k.assistants) && k.assistants.includes(targetPuuid)
+    ).length;
+
+    const earliestKill = allKillsInRound.reduce<any>(
+      (earliest, curr) =>
+        !earliest || Number(curr.roundTime ?? Infinity) < Number(earliest.roundTime ?? Infinity)
+          ? curr
+          : earliest,
+      null
+    );
+    const wonOpeningDuel = earliestKill?.killer === targetPuuid;
 
     const weaponId = String(myStats?.economy?.weapon || '').toUpperCase();
     const resolvedWeapon = VALORANT_WEAPONS[weaponId];
@@ -172,16 +240,14 @@ function parseValorantMatchToRounds(
             weaponName: resolvedWeapon.name,
             category: resolvedWeapon.category,
             kills,
-            headshots: 0,
+            headshots,
             damageDealt,
-            hits: kills,
+            hits: hits > 0 ? hits : kills,
           },
         ]
       : [];
 
-    const diedInRound = roundResults[index]?.playerStats?.some((ps: any) =>
-      (ps.kills || []).some((k: any) => k.victim === targetPuuid)
-    );
+    const diedInRound = allKillsInRound.some((k: any) => k.victim === targetPuuid);
 
     const roundEvents = localTimeline.filter((e) => e.round === roundNum);
     const startMs = roundEvents[0]?.timestampMs ?? index * 90000;
@@ -194,11 +260,11 @@ function parseValorantMatchToRounds(
       result: rr.winningTeam === myTeamId ? 'WIN' : 'LOSS',
       kills,
       deaths: diedInRound ? 1 : 0,
-      assists: 0,
+      assists,
       damageDealt,
       teamAvgLoadoutValue: myStats?.economy?.loadoutValue ?? 3900,
       plantTimeMs: rr.plantRoundTime ?? 0,
-      wonOpeningDuel: false,
+      wonOpeningDuel,
       wasTradedWithin3s: true,
       unusedAbilitiesCount: 0,
       weaponStats,
@@ -309,7 +375,7 @@ router.post('/match', authenticateToken, async (req: AuthRequest, res: Response)
   try {
     let roundsToAnalyze: RawRoundInput[] = Array.isArray(rawRounds) ? rawRounds : [];
 
-    if (gameType === 'PUBG' && roundsToAnalyze.length === 0 && process.env.PUBG_API_KEY) {
+    if (gameType === 'PUBG' && roundsToAnalyze.length === 0 && isConfiguredEnv(process.env.PUBG_API_KEY)) {
       const [userRows] = await dbPool.query<RowDataPacket[]>(
         'SELECT pubg_player_name, steam_persona_name FROM users WHERE id = ?',
         [userId]
@@ -349,24 +415,34 @@ router.post('/match', authenticateToken, async (req: AuthRequest, res: Response)
     if (
       gameType === 'VALORANT' &&
       roundsToAnalyze.length === 0 &&
-      process.env.RIOT_API_KEY &&
-      userPuuid
+      isConfiguredEnv(process.env.RIOT_API_KEY)
     ) {
-      try {
-        const region = process.env.RIOT_REGION || 'ap';
-        const valRes = await axios.get(
-          `https://${region}.api.riotgames.com/val/match/v1/matches/${encodeURIComponent(matchId)}`,
-          {
-            headers: { 'X-Riot-Token': process.env.RIOT_API_KEY },
-          }
+      let resolvedPuuid = userPuuid;
+      if (!resolvedPuuid) {
+        const [uRows] = await dbPool.query<RowDataPacket[]>(
+          'SELECT riot_puuid FROM users WHERE id = ? LIMIT 1',
+          [userId]
         );
-        roundsToAnalyze = parseValorantMatchToRounds(
-          valRes.data,
-          userPuuid,
-          localEvents as TimelineEventInput[]
-        );
-      } catch {
-        console.warn('Dùng dữ liệu timeline cục bộ cho VALORANT.');
+        resolvedPuuid = uRows[0]?.riot_puuid || undefined;
+      }
+
+      if (resolvedPuuid) {
+        try {
+          const region = process.env.RIOT_REGION || 'ap';
+          const valRes = await axios.get(
+            `https://${region}.api.riotgames.com/val/match/v1/matches/${encodeURIComponent(matchId)}`,
+            {
+              headers: { 'X-Riot-Token': process.env.RIOT_API_KEY },
+            }
+          );
+          roundsToAnalyze = parseValorantMatchToRounds(
+            valRes.data,
+            resolvedPuuid,
+            localEvents as TimelineEventInput[]
+          );
+        } catch {
+          console.warn('Dùng dữ liệu timeline cục bộ cho VALORANT.');
+        }
       }
     }
 
@@ -755,6 +831,244 @@ router.post('/pubg/sync', authenticateToken, async (req: AuthRequest, res: Respo
   }
 });
 
+// 4b. POST /api/analyze/valorant/sync — Đồng bộ 20 trận VALORANT gần nhất qua Riot API
+router.post('/valorant/sync', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const riotApiKey = process.env.RIOT_API_KEY;
+
+  if (!userId || !isConfiguredEnv(riotApiKey)) {
+    res.status(400).json({ error: 'Máy chủ chưa cấu hình RIOT_API_KEY hợp lệ.' });
+    return;
+  }
+
+  try {
+    const [userRows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT riot_puuid FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+    const puuid = req.user?.puuid || userRows[0]?.riot_puuid;
+
+    if (!puuid) {
+      res.status(400).json({
+        error: 'Tài khoản chưa liên kết Riot Sign On (RSO) để lấy PUUID đồng bộ trận đấu.',
+      });
+      return;
+    }
+
+    let valShard = (process.env.RIOT_REGION || 'ap').toLowerCase();
+    try {
+      const shardRes = await axios.get(
+        `https://asia.api.riotgames.com/riot/account/v1/active-shards/by-game/val/by-puuid/${encodeURIComponent(
+          puuid
+        )}`,
+        {
+          headers: { 'X-Riot-Token': riotApiKey },
+          timeout: 8000,
+        }
+      );
+      if (shardRes.data?.activeShard) {
+        valShard = String(shardRes.data.activeShard).toLowerCase();
+      }
+    } catch {
+      // Giữ shard mặc định từ RIOT_REGION
+    }
+
+    const matchlistRes = await axios.get(
+      `https://${valShard}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${encodeURIComponent(
+        puuid
+      )}`,
+      {
+        headers: { 'X-Riot-Token': riotApiKey },
+        timeout: 12000,
+      }
+    );
+
+    const history: Array<{ matchId: string; gameStartTimeMillis?: number; queueId?: string }> =
+      matchlistRes.data?.history || [];
+
+    if (history.length === 0) {
+      res.json({
+        syncedCount: 0,
+        message: 'Chưa ghi nhận trận VALORANT nào gần đây trên Riot API.',
+      });
+      return;
+    }
+
+    const candidateIds = history.slice(0, MAX_STORED_MATCHES).map((h) => h.matchId);
+    const [existingRows] = await dbPool.query<RowDataPacket[]>(
+      `SELECT DISTINCT m.match_id
+       FROM matches m
+       INNER JOIN match_rounds mr ON mr.match_id = m.match_id
+       WHERE m.user_id = ? AND m.match_id IN (?)`,
+      [userId, candidateIds]
+    );
+    const existingSet = new Set(existingRows.map((r) => String(r.match_id)));
+    const targetIds = candidateIds.filter((id) => !existingSet.has(id));
+
+    if (targetIds.length === 0) {
+      await enforceRollingMatchLimit(userId, 'VALORANT', MAX_STORED_MATCHES);
+      res.json({
+        syncedCount: 0,
+        message: 'Danh sách 20 trận VALORANT gần nhất đã được cập nhật đầy đủ.',
+      });
+      return;
+    }
+
+    let syncedCount = 0;
+    const batches = chunkArray(targetIds, 5);
+
+    for (const batch of batches) {
+      await Promise.all(
+        batch.map(async (matchId) => {
+          try {
+            const matchRes = await axios.get(
+              `https://${valShard}.api.riotgames.com/val/match/v1/matches/${encodeURIComponent(
+                matchId
+              )}`,
+              {
+                headers: { 'X-Riot-Token': riotApiKey },
+                timeout: 15000,
+              }
+            );
+
+            const data = matchRes.data || {};
+            const info = data.matchInfo || {};
+            const players: any[] = data.players || [];
+            const teams: any[] = data.teams || [];
+
+            const me = players.find((p) => p.puuid === puuid);
+            const myTeamId = me?.teamId;
+            const myTeam = teams.find((t) => t.teamId === myTeamId);
+            const enemyTeam = teams.find((t) => t.teamId !== myTeamId);
+
+            const mapName = resolveValorantMapName(info.mapId);
+            const gameMode = String(info.queueId || info.gameMode || 'Competitive').toUpperCase();
+            const durationSec = Math.round(Number(info.gameLengthMillis || 0) / 1000);
+            const playedAt = info.gameStartMillis ? new Date(info.gameStartMillis) : new Date();
+
+            const myWon = Boolean(myTeam?.won);
+            const matchResult = myTeam ? (myWon ? 'VICTORY' : 'DEFEAT') : 'COMPLETED';
+
+            const myKills = Number(me?.stats?.kills || 0);
+            const myDeaths = Number(me?.stats?.deaths || 0);
+            const myAssists = Number(me?.stats?.assists || 0);
+            const roundScore =
+              myTeam && enemyTeam
+                ? `${myTeam.roundsWon ?? 0}-${enemyTeam.roundsWon ?? 0} • `
+                : '';
+            const scoreSummary = `${roundScore}${myKills}/${myDeaths}/${myAssists} KDA`;
+
+            const rawRounds = parseValorantMatchToRounds(data, puuid, []);
+            const analyzedRounds = rawRounds.map((r) => analyzeRoundTactics(r, 'VALORANT'));
+            const report = await generateMatchReport('VALORANT', mapName, analyzedRounds);
+
+            const conn = await dbPool.getConnection();
+            try {
+              await conn.beginTransaction();
+
+              await conn.query(
+                `INSERT INTO matches (
+                  match_id, user_id, game_type, map_name, game_mode,
+                  match_result, score_summary, duration_sec, played_at
+                ) VALUES (?, ?, 'VALORANT', ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  match_result = VALUES(match_result),
+                  score_summary = VALUES(score_summary),
+                  duration_sec = VALUES(duration_sec)`,
+                [matchId, userId, mapName, gameMode, matchResult, scoreSummary, durationSec, playedAt]
+              );
+
+              await conn.query('DELETE FROM match_rounds WHERE match_id = ?', [matchId]);
+
+              for (const round of analyzedRounds) {
+                await conn.query(
+                  `INSERT INTO match_rounds (
+                    match_id, round_number, start_timestamp_ms, end_timestamp_ms,
+                    round_result, economy_type, tactical_style, kills, deaths, assists,
+                    damage_dealt, strengths_json, mistakes_json, timeline_events_json, weapon_stats_json
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [
+                    matchId,
+                    round.roundNumber,
+                    round.startTimestampMs,
+                    round.endTimestampMs,
+                    round.result,
+                    round.economyType,
+                    round.tacticalStyle,
+                    round.kills,
+                    round.deaths,
+                    round.assists,
+                    round.damageDealt,
+                    JSON.stringify(round.strengths),
+                    JSON.stringify(round.mistakes),
+                    JSON.stringify(round.events),
+                    JSON.stringify(round.weaponStats),
+                  ]
+                );
+              }
+
+              await conn.query(
+                `INSERT INTO match_reports (
+                  match_id, overall_score, strengths_summary, weaknesses_summary,
+                  recommended_drills, coach_commentary
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  overall_score = VALUES(overall_score),
+                  coach_commentary = VALUES(coach_commentary)`,
+                [
+                  matchId,
+                  report.overallScore,
+                  JSON.stringify(report.strengthsSummary),
+                  JSON.stringify(report.weaknessesSummary),
+                  JSON.stringify(report.recommendedDrills),
+                  report.coachCommentary,
+                ]
+              );
+
+              await conn.commit();
+              syncedCount += 1;
+            } catch (txErr) {
+              await conn.rollback();
+              throw txErr;
+            } finally {
+              conn.release();
+            }
+          } catch (matchErr) {
+            console.warn(`Bỏ qua trận VALORANT ${matchId} do lỗi tải dữ liệu:`, matchErr);
+          }
+        })
+      );
+    }
+
+    await enforceRollingMatchLimit(userId, 'VALORANT', MAX_STORED_MATCHES);
+
+    res.json({
+      syncedCount,
+      message:
+        syncedCount > 0
+          ? `Đã đồng bộ dữ liệu phân tích cho ${syncedCount} trận VALORANT.`
+          : 'Không có trận VALORANT mới nào cần cập nhật.',
+    });
+  } catch (error: any) {
+    const status = error?.response?.status;
+    if (status === 401 || status === 403) {
+      res.status(403).json({
+        error:
+          'RIOT_API_KEY hiện tại không có quyền truy cập val-match-v1 (cần Production API Key đã được Riot duyệt) hoặc đã hết hạn.',
+      });
+      return;
+    }
+    if (status === 429) {
+      res.status(429).json({
+        error: 'Riot API đang giới hạn lượt truy vấn, vui lòng thử lại sau ít giây.',
+      });
+      return;
+    }
+    console.error('Lỗi đồng bộ 20 trận VALORANT:', error);
+    res.status(500).json({ error: 'Không thể đồng bộ dữ liệu trận đấu từ Riot API.' });
+  }
+});
+
 // 5. GET /api/analyze/player-search
 router.get('/player-search', async (req, res: Response) => {
   const game = String(req.query.game || 'PUBG').toUpperCase();
@@ -767,7 +1081,7 @@ router.get('/player-search', async (req, res: Response) => {
 
   try {
     if (game === 'PUBG') {
-      if (!process.env.PUBG_API_KEY) {
+      if (!isConfiguredEnv(process.env.PUBG_API_KEY)) {
         res.status(400).json({ error: 'Máy chủ chưa cấu hình PUBG_API_KEY.' });
         return;
       }
@@ -843,19 +1157,21 @@ router.get('/player-search', async (req, res: Response) => {
       return;
     }
 
-    if (!query.includes('#')) {
+    const hashIdx = query.indexOf('#');
+    if (hashIdx <= 0 || hashIdx === query.length - 1) {
       res.status(400).json({
         error: 'Vui lòng nhập đúng định dạng Riot ID gồm dấu # (Ví dụ: TenZ#0505).',
       });
       return;
     }
 
-    if (!process.env.RIOT_API_KEY) {
+    if (!isConfiguredEnv(process.env.RIOT_API_KEY)) {
       res.status(400).json({ error: 'Máy chủ chưa cấu hình RIOT_API_KEY.' });
       return;
     }
 
-    const [gameName, tagLine] = query.split('#');
+    const gameName = query.slice(0, hashIdx).trim();
+    const tagLine = query.slice(hashIdx + 1).trim();
     const accountRes = await axios.get(
       `https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
         gameName.trim()
@@ -915,7 +1231,7 @@ router.get('/player-search', async (req, res: Response) => {
 });
 
 // POST /api/analyze/chat — Hỏi đáp chiến thuật với AI Coach dựa trên dữ liệu trận đấu
-router.post('/chat', async (req: Request, res: Response) => {
+router.post('/chat', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const {
       gameType = 'VALORANT',
@@ -933,7 +1249,7 @@ router.post('/chat', async (req: Request, res: Response) => {
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
+    if (!isConfiguredEnv(apiKey)) {
       res.status(500).json({ error: 'Máy chủ chưa cấu hình GEMINI_API_KEY.' });
       return;
     }
@@ -1020,32 +1336,24 @@ THÔNG TIN TRẬN ĐẤU:
 });
 
 // GET /api/analyze/leaderboard — Tổng hợp bảng xếp hạng thành tích nhóm từ TiDB Cloud
-router.get('/leaderboard', async (req: Request, res: Response) => {
+router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const gameType = req.query.gameType === 'VALORANT' ? 'VALORANT' : 'PUBG';
-    const dbMod = await import('../config/db');
-    const executor: any =
-      (dbMod as any).pool || (dbMod as any).db || (dbMod as any).default;
-
-    if (!executor?.query) {
-      res.status(500).json({ error: 'Không tìm thấy kết nối cơ sở dữ liệu TiDB.' });
-      return;
-    }
 
     // Tự động dò tên bảng lưu danh sách trận đấu trong TiDB
-    const [tableRows]: any = await executor.query(
+    const [tableRows]: any = await dbPool.query(
       `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'match_result'
        LIMIT 1`
     );
     const matchesTable = tableRows?.[0]?.TABLE_NAME || 'matches';
 
-    const [users]: any = await executor.query(
+    const [users]: any = await dbPool.query(
       `SELECT id, riot_game_name, riot_tag_line, steam_persona_name, steam_avatar, pubg_player_name
        FROM users`
     );
 
-    const [matches]: any = await executor.query(
+    const [matches]: any = await dbPool.query(
       `SELECT user_id, match_result, score_summary, cloud_video_url, local_video_filename, played_at
        FROM \`${matchesTable}\`
        WHERE game_type = ?
@@ -1136,18 +1444,15 @@ router.get('/leaderboard', async (req: Request, res: Response) => {
 router.get('/public-match/:matchId', async (req: Request, res: Response) => {
   try {
     const matchId = String(req.params.matchId || '').trim();
-    const dbMod = await import('../config/db');
-    const executor: any =
-      (dbMod as any).pool || (dbMod as any).db || (dbMod as any).default;
 
-    const [tableRows]: any = await executor.query(
+    const [tableRows]: any = await dbPool.query(
       `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'match_result'
        LIMIT 1`
     );
     const matchesTable = tableRows?.[0]?.TABLE_NAME || 'matches';
 
-    const [rows]: any = await executor.query(
+    const [rows]: any = await dbPool.query(
       `SELECT m.*, u.steam_persona_name, u.pubg_player_name, u.riot_game_name, u.riot_tag_line
        FROM \`${matchesTable}\` m
        LEFT JOIN users u ON u.id = m.user_id
@@ -1162,21 +1467,29 @@ router.get('/public-match/:matchId', async (req: Request, res: Response) => {
       return;
     }
 
-    const playerName =
+    const rawPlayerName =
       match.game_type === 'VALORANT'
         ? `${match.riot_game_name || 'Player'}#${match.riot_tag_line || ''}`
         : match.pubg_player_name || match.steam_persona_name || 'PUBG Player';
 
-    const videoBlock = match.cloud_video_url
-      ? `<video src="${match.cloud_video_url}" controls autoplay style="width:100%;border-radius:12px;background:#000;margin-top:16px;"></video>`
-      : `<div style="padding:32px;border:1px dashed #334155;border-radius:12px;text-align:center;color:#94a3b8;margin-top:16px;">Trận đấu này chưa tải video lên cloud, chỉ chia sẻ thông số kết quả.</div>`;
+    const safePlayerName = escapeHtml(rawPlayerName);
+    const safeMapName = escapeHtml(match.map_name);
+    const safeMatchResult = escapeHtml(match.match_result);
+    const safeMode = escapeHtml(match.game_mode || match.game_type);
+    const safeScoreSummary = escapeHtml(match.score_summary || '');
+    const rawVideoUrl = String(match.cloud_video_url || '').trim();
+
+    const videoBlock =
+      rawVideoUrl && isSafeVideoUrl(rawVideoUrl)
+        ? `<video src="${escapeHtml(rawVideoUrl)}" controls autoplay style="width:100%;border-radius:12px;background:#000;margin-top:16px;"></video>`
+        : `<div style="padding:32px;border:1px dashed #334155;border-radius:12px;text-align:center;color:#94a3b8;margin-top:16px;">Trận đấu này chưa tải video lên cloud, chỉ chia sẻ thông số kết quả.</div>`;
 
     res.send(`<!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${playerName} - ${match.map_name} (${match.match_result}) | TacticalReplayAI</title>
+  <title>${safePlayerName} - ${safeMapName} (${safeMatchResult}) | TacticalReplayAI</title>
 </head>
 <body style="margin:0;background:#020617;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <div style="max-width:860px;margin:0 auto;padding:36px 20px;">
@@ -1184,8 +1497,8 @@ router.get('/public-match/:matchId', async (req: Request, res: Response) => {
       <strong style="font-size:18px;">TacticalReplay<span style="color:#ff4655;">AI</span></strong>
       <span style="font-size:12px;color:#34d399;background:rgba(16,185,129,0.12);padding:4px 10px;border-radius:999px;">Shared Match Clip</span>
     </div>
-    <h1 style="font-size:24px;margin:20px 0 6px;">${match.map_name} • ${match.match_result}</h1>
-    <p style="color:#94a3b8;font-size:14px;margin:0;">Người chơi: <strong style="color:#fff;">${playerName}</strong> • ${match.game_mode || match.game_type} • ${match.score_summary || ''}</p>
+    <h1 style="font-size:24px;margin:20px 0 6px;">${safeMapName} • ${safeMatchResult}</h1>
+    <p style="color:#94a3b8;font-size:14px;margin:0;">Người chơi: <strong style="color:#fff;">${safePlayerName}</strong> • ${safeMode} • ${safeScoreSummary}</p>
     ${videoBlock}
   </div>
 </body>

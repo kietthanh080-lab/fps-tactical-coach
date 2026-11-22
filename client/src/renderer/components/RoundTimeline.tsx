@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Crosshair, Funnel, WarningCircle } from '@phosphor-icons/react';
 
 export interface WeaponUsageStatUI {
   weaponName: string;
@@ -51,28 +52,45 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
     return true;
   });
 
+  const killRoundsCount = rounds.filter((r) => r.kills > 0).length;
+  const mistakeRoundsCount = rounds.filter((r) => r.mistakes.length > 0 || r.deaths > 0).length;
+
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-            {isValo ? 'Diễn biến từng Round' : 'Diễn biến từng Giai đoạn Vòng Bo (Phase)'}
-          </h3>
-          <p className="text-[11px] text-slate-500">
-            Chọn mốc để tua video và xem phân tích vũ khí, lỗi vị trí bên phải
-          </p>
+    <section
+      aria-label={isValo ? 'Ma tran dien bien Round' : 'Ma tran dien bien Phase'}
+      className="border border-[#232B3B] bg-[#10141C] rounded-[4px] p-4 space-y-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232B3B] pb-3">
+        <div className="flex items-center gap-2.5">
+          <div
+            className={`h-7 w-7 rounded-[2px] flex items-center justify-center border ${
+              isValo
+                ? 'bg-[#FF4655]/10 border-[#FF4655]/40 text-[#FF4655]'
+                : 'bg-[#E59A23]/10 border-[#E59A23]/40 text-[#E59A23]'
+            }`}
+          >
+            <Funnel size={15} weight="bold" aria-hidden="true" />
+          </div>
+          <div>
+            <h3 className="font-display text-sm font-bold tracking-tight text-[#EEF2F6]">
+              {isValo ? 'Diễn biến từng Round' : 'Diễn biến từng Giai đoạn Vòng Bo (Phase)'}
+            </h3>
+            <p className="text-[11px] text-[#94A3B8] leading-snug">
+              Chọn mốc để tua video và xem phân tích vũ khí, lỗi vị trí bên phải
+            </p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1 rounded-lg bg-slate-950 border border-slate-800 p-1 text-[11px]">
+        <div className="flex flex-wrap items-center gap-1 bg-[#0A0D12] border border-[#232B3B] p-1 rounded-[2px] text-[11px] font-mono">
           <button
             type="button"
             onClick={() => setFilter('ALL')}
-            className={`px-2.5 py-1 rounded-md font-bold transition ${
+            className={`px-2.5 py-1.5 rounded-[2px] font-bold transition duration-150 active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] ${
               filter === 'ALL'
                 ? isValo
-                  ? 'bg-[#ff4655] text-white'
-                  : 'bg-amber-500 text-slate-950'
-                : 'text-slate-400 hover:text-white'
+                  ? 'bg-[#FF4655] text-[#EEF2F6]'
+                  : 'bg-[#E59A23] text-[#0A0D12]'
+                : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
             }`}
           >
             Tất cả ({rounds.length})
@@ -80,36 +98,38 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
           <button
             type="button"
             onClick={() => setFilter('KILLS')}
-            className={`px-2.5 py-1 rounded-md font-bold transition ${
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-[2px] font-bold transition duration-150 active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#10B981] ${
               filter === 'KILLS'
-                ? 'bg-emerald-500 text-slate-950'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-[#10B981] text-[#0A0D12]'
+                : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
             }`}
           >
-            Có Kill ({rounds.filter((r) => r.kills > 0).length})
+            <Crosshair size={12} weight="bold" aria-hidden="true" />
+            <span>Có Kill ({killRoundsCount})</span>
           </button>
           <button
             type="button"
             onClick={() => setFilter('MISTAKES')}
-            className={`px-2.5 py-1 rounded-md font-bold transition ${
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-[2px] font-bold transition duration-150 active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F43F5E] ${
               filter === 'MISTAKES'
-                ? 'bg-rose-500 text-white'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-[#F43F5E] text-[#EEF2F6]'
+                : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
             }`}
           >
-            Cần rút kinh nghiệm ({rounds.filter((r) => r.mistakes.length > 0 || r.deaths > 0).length})
+            <WarningCircle size={12} weight="bold" aria-hidden="true" />
+            <span>Rút kinh nghiệm ({mistakeRoundsCount})</span>
           </button>
         </div>
       </div>
 
       {filteredRounds.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-slate-800 py-5 text-center text-xs text-slate-500">
+        <div className="border border-dashed border-[#232B3B] bg-[#0A0D12]/60 rounded-[2px] py-6 text-center text-xs text-[#64748B]">
           {rounds.length === 0
             ? 'Trận đấu này chưa có dữ liệu chi tiết từng giai đoạn.'
             : 'Không có giai đoạn nào khớp bộ lọc đang chọn.'}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-60 overflow-y-auto tactical-scrollbar pr-1">
           {filteredRounds.map((r) => {
             const isSelected = r.roundNumber === selectedRound;
             const isPositive = r.result === 'WIN' || r.result === 'SURVIVED';
@@ -121,40 +141,40 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
                 key={r.roundNumber}
                 type="button"
                 onClick={() => onSelectRound(r.roundNumber)}
-                className={`p-2.5 rounded-xl border text-left transition space-y-1 ${
+                className={`relative p-2.5 rounded-[2px] border text-left transition duration-150 active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] space-y-1.5 ${
                   isSelected
                     ? isValo
-                      ? 'bg-[#ff4655]/15 border-[#ff4655] shadow-sm'
-                      : 'bg-amber-500/15 border-amber-500 shadow-sm'
-                    : 'bg-slate-950/80 border-slate-800/90 hover:border-slate-700 hover:bg-slate-800/50'
+                      ? 'bg-[#FF4655]/12 border-[#FF4655]'
+                      : 'bg-[#E59A23]/12 border-[#E59A23]'
+                    : 'bg-[#0A0D12] border-[#232B3B] hover:border-[#334155] hover:bg-[#171D28]'
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
-                  <span className="text-xs font-extrabold text-white">
-                    {isValo ? `R${r.roundNumber}` : `Phase ${r.roundNumber}`}
+                  <span className="font-display text-xs font-bold text-[#EEF2F6]">
+                    {isValo ? `R${String(r.roundNumber).padStart(2, '0')}` : `Phase ${r.roundNumber}`}
                   </span>
                   <span
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    className={`font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] border ${
                       isPositive
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : 'bg-rose-500/15 text-rose-400'
+                        ? 'bg-[#10B981]/10 border-[#10B981]/30 text-[#10B981]'
+                        : 'bg-[#F43F5E]/10 border-[#F43F5E]/30 text-[#F43F5E]'
                     }`}
                   >
                     {r.result}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className={hasKills ? 'font-bold text-emerald-400' : 'text-slate-400'}>
-                    {r.kills}/{r.deaths}/{r.assists} KDA
+                <div className="flex items-center justify-between font-mono text-[11px] tabular-nums">
+                  <span className={hasKills ? 'font-bold text-[#10B981]' : 'text-[#94A3B8]'}>
+                    {r.kills}/{r.deaths}/{r.assists}
                   </span>
-                  <span className="text-slate-400 font-mono">{r.damageDealt} DMG</span>
+                  <span className="text-[#94A3B8]">{r.damageDealt} DMG</span>
                 </div>
 
-                <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
-                  <span className="truncate">{r.economyType}</span>
+                <div className="flex items-center justify-between text-[10px] text-[#64748B] pt-1 border-t border-[#232B3B]/70">
+                  <span className="truncate font-mono">{r.economyType}</span>
                   {hasMistakes && (
-                    <span className="text-amber-400 font-semibold shrink-0">
+                    <span className="text-[#E59A23] font-semibold shrink-0">
                       {r.mistakes.length} lưu ý
                     </span>
                   )}
@@ -164,6 +184,6 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
           })}
         </div>
       )}
-    </div>
+    </section>
   );
 };

@@ -101,7 +101,7 @@ ipcMain.handle('shell:open-external', async (_event, url) => {
 });
 
 function createMainWindow() {
-  const indexHtmlPath = path.join(__dirname, '../dist/public/index.html');
+  const indexHtmlPath = path.join(__dirname, '../dist/index.html');
 
   const win = new BrowserWindow({
     width: 1360,

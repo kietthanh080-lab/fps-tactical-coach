@@ -1,4 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
 const TOKEN_KEY = 'tactical_replay_auth_token';
 const VIDEOS_MAP_KEY = 'tactical_replay_local_videos';
 
@@ -17,6 +18,12 @@ export interface TimelineEvent {
   round: number;
   type: 'ROUND_START' | 'KILL' | 'DEATH' | 'SPIKE_PLANTED' | 'ROUND_END';
   payload?: Record<string, unknown>;
+}
+
+export interface AuthProvidersStatus {
+  riotRsoReady: boolean;
+  riotApiReady: boolean;
+  steamReady: boolean;
 }
 
 export function getAuthToken(): string | null {
@@ -90,6 +97,51 @@ async function authFetch(endpoint: string, options: RequestInit = {}) {
   return response.json();
 }
 
+export async function fetchAuthProviders(): Promise<AuthProvidersStatus> {
+  const res = await fetch(`${API_BASE_URL}/auth/providers`);
+  if (!res.ok) {
+    return { riotRsoReady: false, riotApiReady: false, steamReady: true };
+  }
+  return res.json();
+}
+
+export async function pollAuthSession(
+  sessionId: string
+): Promise<{ status: 'pending' | 'completed' | 'error'; token?: string; error?: string }> {
+  const res = await fetch(`${API_BASE_URL}/auth/session/${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    return { status: 'pending' };
+  }
+  return res.json();
+}
+
+export async function prepareRiotLinkUrl(payload: {
+  returnTo: string;
+  sessionId?: string;
+  promptLogin?: boolean;
+}): Promise<{ authUrl: string }> {
+  return authFetch('/auth/riot/link-session', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function prepareSteamLinkUrl(payload: {
+  returnTo: string;
+  sessionId?: string;
+}): Promise<{ authUrl: string }> {
+  return authFetch('/auth/steam/link-session', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function unlinkRiotAccount(): Promise<{ token: string; message: string }> {
+  return authFetch('/auth/riot/unlink', {
+    method: 'POST',
+  });
+}
+
 export async function fetchMyVideos() {
   return authFetch('/auth/my-videos');
 }
@@ -133,6 +185,12 @@ export async function syncRealPubgMatches() {
   });
 }
 
+export async function syncRealValorantMatches() {
+  return authFetch('/analyze/valorant/sync', {
+    method: 'POST',
+  });
+}
+
 export async function fetchMatchDetail(matchId: string) {
   return authFetch(`/analyze/match/${encodeURIComponent(matchId)}`);
 }
@@ -159,7 +217,7 @@ export async function uploadMatchHighlight(
   matchId: string,
   fileBlob: Blob,
   fileName: string
-): Promise<{ matchId: string; cloudVideoUrl: string }> {
+): Promise<{ matchId: string; cloudVideoUrl: string; fileName?: string }> {
   const token = getAuthToken();
   const formData = new FormData();
   formData.append('matchId', matchId);
@@ -179,31 +237,22 @@ export async function uploadMatchHighlight(
   return response.json();
 }
 
-export async function quickLoginWithRiotId(riotId: string): Promise<{
-  token: string;
-  user: {
-    id: number;
-    riot_game_name: string;
-    riot_tag_line: string;
-  };
-}> {
-  const existingToken = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/auth/riot/quick-login`, {
+export async function askAiCoach(payload: {
+  matchId: string | null;
+  gameType: 'VALORANT' | 'PUBG';
+  mapName: string;
+  question: string;
+  activeRound: unknown;
+  rounds: unknown[];
+  report: unknown;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+}): Promise<{ reply: string }> {
+  return authFetch('/analyze/chat', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(existingToken ? { Authorization: `Bearer ${existingToken}` } : {}),
-    },
-    body: JSON.stringify({ riotId }),
+    body: JSON.stringify(payload),
   });
+}
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Đăng nhập bằng Riot ID thất bại.');
-  }
-
-  if (data.token) {
-    setAuthToken(data.token);
-  }
-  return data;
+export async function fetchLeaderboard(gameType: 'VALORANT' | 'PUBG') {
+  return authFetch(`/analyze/leaderboard?gameType=${encodeURIComponent(gameType)}`);
 }

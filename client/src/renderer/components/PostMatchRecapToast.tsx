@@ -1,4 +1,6 @@
 import React from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { WarningCircle, X } from '@phosphor-icons/react';
 import { MatchReportUI } from './TacticalReport';
 
 interface PostMatchRecapToastProps {
@@ -20,71 +22,89 @@ export const PostMatchRecapToast: React.FC<PostMatchRecapToastProps> = ({
   report,
   onClose,
 }) => {
-  if (!isOpen || !mapName) return null;
-
+  const reduceMotion = useReducedMotion();
   const isValo = gameType === 'VALORANT';
   const topWeaknesses = report?.weaknessesSummary?.slice(0, 3) || [];
 
   return (
-    <div className="fixed bottom-5 left-5 z-40 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur-xs space-y-3">
-      <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-2.5">
-        <div>
-          <div className="flex items-center gap-2">
-            <span
-              className={`rounded px-2 py-0.5 text-[10px] font-extrabold ${
-                isValo
-                  ? 'bg-[#ff4655]/20 text-[#ff4655]'
-                  : 'bg-amber-500/20 text-amber-300'
-              }`}
-            >
-              POST-MATCH RECAP • {gameType}
-            </span>
-            {report && (
-              <span className="text-xs font-extrabold text-emerald-400">
-                Điểm AI: {report.overallScore}/100
-              </span>
-            )}
-          </div>
-          <h3 className="mt-1 text-sm font-extrabold text-white">
-            {mapName} • {matchResult}{' '}
-            {scoreSummary ? <span className="text-slate-400 font-normal">({scoreSummary})</span> : ''}
-          </h3>
-        </div>
-
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-xs text-slate-300"
+    <AnimatePresence>
+      {isOpen && mapName && (
+        <motion.aside
+          aria-label="Tom tat nhanh sau tran dau"
+          initial={reduceMotion ? false : { opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 16 }}
+          transition={{ type: 'spring', stiffness: 280, damping: 24 }}
+          className="fixed bottom-5 left-5 z-40 w-[calc(100vw-2.5rem)] max-w-md rounded-[4px] border border-[#334155] bg-[#10141C] p-4 shadow-2xl space-y-3"
         >
-          Đóng
-        </button>
-      </div>
+          <div className="flex items-start justify-between gap-3 border-b border-[#232B3B] pb-2.5">
+            <div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-[2px] px-2 py-0.5 font-mono text-[10px] font-bold border ${
+                    isValo
+                      ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
+                      : 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
+                  }`}
+                >
+                  POST-MATCH RECAP - {gameType}
+                </span>
+                {report && (
+                  <span className="font-mono text-xs font-bold text-[#10B981] tabular-nums">
+                    AI: {report.overallScore}/10
+                  </span>
+                )}
+              </div>
+              <h3 className="font-display mt-1.5 text-sm font-bold text-[#EEF2F6]">
+                {mapName} - {matchResult}{' '}
+                {scoreSummary ? (
+                  <span className="font-mono text-xs text-[#94A3B8] font-normal">
+                    ({scoreSummary})
+                  </span>
+                ) : null}
+              </h3>
+            </div>
 
-      {report?.coachCommentary && (
-        <p className="text-xs text-slate-300 leading-relaxed">{report.coachCommentary}</p>
-      )}
+            <button
+              type="button"
+              aria-label="Đóng tóm tắt trận đấu"
+              onClick={onClose}
+              className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] p-1.5 text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+            >
+              <X size={14} weight="bold" aria-hidden="true" />
+            </button>
+          </div>
 
-      {topWeaknesses.length > 0 ? (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-            3 lưu ý nhanh trước trận tiếp theo:
-          </p>
-          <ul className="space-y-1 text-xs text-slate-300">
-            {topWeaknesses.map((w, idx) => (
-              <li
-                key={idx}
-                className="rounded-lg bg-slate-950/90 border border-slate-800 px-2.5 py-1.5"
-              >
-                • {w}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p className="text-xs text-slate-400">
-          Trận đấu giữ nhịp độ ổn định. Hãy kiểm tra thêm từng mốc giao tranh ở cột bên phải.
-        </p>
+          {report?.coachCommentary && (
+            <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[65ch]">
+              {report.coachCommentary}
+            </p>
+          )}
+
+          {topWeaknesses.length > 0 ? (
+            <div className="space-y-1.5">
+              <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-[#E59A23] flex items-center gap-1.5">
+                <WarningCircle size={12} weight="bold" aria-hidden="true" />
+                <span>3 lưu ý nhanh trước trận tiếp theo</span>
+              </p>
+              <ul className="space-y-1 text-xs text-[#EEF2F6]">
+                {topWeaknesses.map((w, idx) => (
+                  <li
+                    key={idx}
+                    className="rounded-[2px] bg-[#0A0D12] border border-[#232B3B] px-2.5 py-1.5 leading-snug"
+                  >
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-[#94A3B8]">
+              Trận đấu giữ nhịp độ ổn định. Kiểm tra thêm từng mốc giao tranh ở cột bên phải.
+            </p>
+          )}
+        </motion.aside>
       )}
-    </div>
+    </AnimatePresence>
   );
 };

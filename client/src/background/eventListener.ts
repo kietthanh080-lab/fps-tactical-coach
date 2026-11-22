@@ -21,6 +21,7 @@ class GameEventListener {
   private currentMode = 'Competitive';
   private currentMatchId = '';
   private timelineEvents: TimelineEvent[] = [];
+  private awaitingFirstRoundStart = false;
 
   public init(): void {
     if (typeof overwolf === 'undefined' || !overwolf.games) {
@@ -119,8 +120,20 @@ class GameEventListener {
         break;
 
       case 'round_start':
-      case 'phase_change':
-        this.currentRound += 1;
+      case 'phase_change': {
+        const explicitRound = Number(
+          parsedData.round ?? parsedData.round_number ?? parsedData.phase
+        );
+        if (Number.isFinite(explicitRound) && explicitRound >= 1) {
+          this.currentRound = explicitRound;
+          this.awaitingFirstRoundStart = false;
+        } else if (this.awaitingFirstRoundStart && relativeMs < 30000) {
+          this.awaitingFirstRoundStart = false;
+          break;
+        } else {
+          this.awaitingFirstRoundStart = false;
+          this.currentRound += 1;
+        }
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,
@@ -128,8 +141,10 @@ class GameEventListener {
           payload: parsedData,
         });
         break;
+      }
 
       case 'kill':
+        this.awaitingFirstRoundStart = false;
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,
@@ -139,6 +154,7 @@ class GameEventListener {
         break;
 
       case 'death':
+        this.awaitingFirstRoundStart = false;
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,
@@ -148,6 +164,7 @@ class GameEventListener {
         break;
 
       case 'spike_planted':
+        this.awaitingFirstRoundStart = false;
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,
@@ -157,6 +174,7 @@ class GameEventListener {
         break;
 
       case 'round_end':
+        this.awaitingFirstRoundStart = false;
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,
@@ -174,6 +192,7 @@ class GameEventListener {
   private async beginMatch(): Promise<void> {
     this.matchStartTime = Date.now();
     this.currentRound = 1;
+    this.awaitingFirstRoundStart = true;
     this.timelineEvents = [
       { timestampMs: 0, round: 1, type: 'ROUND_START' },
     ];
@@ -233,8 +252,11 @@ if (getAuthToken()) {
       }
     }
 
-    // Reset ID trận cho ván tiếp theo
+    // Reset dữ liệu trận cho ván tiếp theo
     this.currentMatchId = '';
+    this.currentRound = 1;
+    this.timelineEvents = [];
+    this.awaitingFirstRoundStart = false;
 
     // Mở cửa sổ Desktop App để người dùng xem lại video & phân tích ngay sau trận
     if (typeof overwolf !== 'undefined' && overwolf.windows) {

@@ -9,8 +9,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        main: 'public/index.html',
-        background: 'public/background.html',
+        main: 'index.html',
+        background: 'background.html',
       },
     },
   },
