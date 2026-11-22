@@ -649,7 +649,7 @@ const App: React.FC = () => {
                   rel="noreferrer"
                   className="hover:text-[#EEF2F6] transition duration-150"
                 >
-                  Privacy
+                  Chính sách bảo mật
                 </a>
                 <a
                   href={`${serverRootUrl}/terms`}
@@ -657,13 +657,13 @@ const App: React.FC = () => {
                   rel="noreferrer"
                   className="hover:text-[#EEF2F6] transition duration-150"
                 >
-                  Terms
+                  Điều khoản
                 </a>
               </nav>
 
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 font-mono text-[11px] font-bold text-[#10B981]">
                 <ShieldCheck size={14} weight="bold" aria-hidden="true" />
-                <span>Vanguard &amp; BattlEye Compliant</span>
+                <span>Tuân thủ Vanguard &amp; BattlEye</span>
               </span>
             </div>
           </div>
@@ -684,7 +684,7 @@ const App: React.FC = () => {
             <div className="space-y-3">
               <p className="font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-[#E59A23] flex items-center gap-2">
                 <Broadcast size={14} weight="bold" aria-hidden="true" />
-                <span>Post-Match Video Replay &amp; Telemetry</span>
+                <span>Xem lại Video Replay &amp; Dữ liệu sau trận</span>
               </p>
               <h1 className="font-display text-[clamp(1.85rem,3.4vw,2.9rem)] font-bold tracking-tight leading-[1.08] text-[#EEF2F6] text-balance">
                 Phân tích chiến thuật sau trận đấu cho VALORANT &amp; PUBG

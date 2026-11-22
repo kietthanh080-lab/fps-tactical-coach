@@ -19,10 +19,10 @@ const baseStyles = `
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: "Be Vietnam Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg-obsidian);
     color: var(--text-primary);
-    line-height: 1.6;
+    line-height: 1.65;
   }
   .container {
     max-width: 1120px;
@@ -66,7 +66,7 @@ const baseStyles = `
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 18px;
+    gap: 16px;
   }
   nav a {
     color: var(--text-secondary);
@@ -76,6 +76,7 @@ const baseStyles = `
     transition: color 0.15s ease;
   }
   nav a:hover { color: #ffffff; }
+  nav a.nav-active { color: #ffffff; border-bottom: 2px solid var(--accent-crimson); padding-bottom: 2px; }
   nav a.nav-cta {
     padding: 7px 14px;
     border-radius: 2px;
@@ -84,6 +85,25 @@ const baseStyles = `
     font-weight: 700;
   }
   nav a.nav-cta:hover { background: #f43f5e; }
+  .lang-switch {
+    display: inline-flex;
+    border: 1px solid var(--border-hairline);
+    background: var(--bg-panel);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .lang-switch a {
+    padding: 4px 9px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--text-secondary);
+    text-decoration: none;
+  }
+  .lang-switch a.active {
+    background: var(--bg-elevated);
+    color: #38BDF8;
+    font-weight: 700;
+  }
   h1 {
     color: #ffffff;
     font-size: clamp(26px, 3.2vw, 38px);
@@ -228,8 +248,20 @@ const baseStyles = `
   }
 `;
 
-const layout = (title: string, bodyHtml: string, extraHead = '') => `<!DOCTYPE html>
-<html lang="en">
+function isEnglishMode(req: Request): boolean {
+  return String(req.query.lang || '').toLowerCase() === 'en';
+}
+
+const layout = (
+  currentPath: '/' | '/demo' | '/privacy' | '/terms',
+  title: string,
+  bodyHtml: string,
+  isEn: boolean,
+  extraHead = ''
+) => {
+  const qs = isEn ? '?lang=en' : '';
+  return `<!DOCTYPE html>
+<html lang="${isEn ? 'en' : 'vi'}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -240,26 +272,38 @@ const layout = (title: string, bodyHtml: string, extraHead = '') => `<!DOCTYPE h
 <body>
   <div class="container">
     <header>
-      <a class="brand" href="/">
+      <a class="brand" href="/${qs}">
         <span class="brand-mark">TR</span>
         <span>TacticalReplay<span class="accent">AI</span></span>
       </a>
-      <nav>
-        <a href="/">Overview &amp; UX Flow</a>
-        <a href="/demo" class="nav-cta">Interactive Web Prototype</a>
-        <a href="/privacy">Privacy Policy</a>
-        <a href="/terms">Terms of Service</a>
+      <nav aria-label="${isEn ? 'Primary navigation' : 'Điều hướng chính'}">
+        <a href="/${qs}" class="${currentPath === '/' ? 'nav-active' : ''}">${isEn ? 'Overview &amp; UX Flow' : 'Tổng quan &amp; Luồng UX'}</a>
+        <a href="/demo${qs}" class="nav-cta">${isEn ? 'Interactive Web Prototype' : 'Bản thử nghiệm Web'}</a>
+        <a href="/privacy${qs}" class="${currentPath === '/privacy' ? 'nav-active' : ''}">${isEn ? 'Privacy Policy' : 'Chính sách bảo mật'}</a>
+        <a href="/terms${qs}" class="${currentPath === '/terms' ? 'nav-active' : ''}">${isEn ? 'Terms of Service' : 'Điều khoản dịch vụ'}</a>
+        <span class="lang-switch" aria-label="${isEn ? 'Language switcher' : 'Chuyển ngôn ngữ'}">
+          <a href="${currentPath}" class="${!isEn ? 'active' : ''}">VI</a>
+          <a href="${currentPath}?lang=en" class="${isEn ? 'active' : ''}">EN</a>
+        </span>
       </nav>
     </header>
     ${bodyHtml}
     <footer>
+      <p style="margin-bottom:6px;">
+        ${
+          isEn
+            ? 'TacticalReplayAI v1.4.0 - Free community post-match coaching & replay review.'
+            : 'TacticalReplayAI v1.4.0 - Nền tảng xem lại video và phân tích chiến thuật sau trận đấu dành cho cộng đồng VALORANT &amp; PUBG.'
+        }
+      </p>
       <p>TacticalReplayAI isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, VALORANT, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
     </footer>
   </div>
 </body>
 </html>`;
+};
 
-// 0. GET /riot.txt — Riot Developer Portal domain ownership verification
+// 0. GET /riot.txt - Riot Developer Portal domain ownership verification
 router.get('/riot.txt', (_req: Request, res: Response) => {
   const verificationToken = (
     process.env.RIOT_VERIFY_TOKEN || '4250f227-8b94-405d-99ba-8546497b81d1'
@@ -268,12 +312,17 @@ router.get('/riot.txt', (_req: Request, res: Response) => {
   res.send(verificationToken);
 });
 
-// 1. GET / — Public Overview, Visual UX Flow & Policy Showcase for Riot Reviewers
-router.get('/', (_req: Request, res: Response) => {
-  res.send(
-    layout(
-      'Post-Match Tactical Replay & Coaching',
-      `
+// 1. GET / - Tong quan cong khai, luong UX va tuân thủ Riot Policy
+router.get('/', (req: Request, res: Response) => {
+  const isEn = isEnglishMode(req);
+  const qs = isEn ? '?lang=en' : '';
+
+  if (isEn) {
+    res.send(
+      layout(
+        '/',
+        'Post-Match Tactical Replay & Coaching',
+        `
       <div class="hero-split">
         <div>
           <span class="badge">VANGUARD COMPLIANT - POST-MATCH ONLY - RSO PROTECTED</span>
@@ -282,7 +331,7 @@ router.get('/', (_req: Request, res: Response) => {
             TacticalReplayAI is a free, public community coaching platform that helps VALORANT players review completed matches by pairing local Overwolf gameplay clips with round-by-round economy breakdowns, telestrator drawing tools, and AI-assisted post-match debriefs.
           </p>
           <div class="cta-row">
-            <a class="btn-primary" href="/demo">Launch Interactive Web Prototype (/demo)</a>
+            <a class="btn-primary" href="/demo${qs}">Launch Interactive Web Prototype (/demo)</a>
             <a class="btn-secondary" href="https://github.com/kietthanh080-lab/fps-tactical-coach" target="_blank" rel="noreferrer">View Source Repository</a>
           </div>
         </div>
@@ -353,13 +402,107 @@ router.get('/', (_req: Request, res: Response) => {
           </tbody>
         </table>
       </div>
+      `,
+        true
+      )
+    );
+    return;
+  }
+
+  res.send(
+    layout(
+      '/',
+      'Xem lại Replay & Phân tích chiến thuật sau trận',
       `
+      <div class="hero-split">
+        <div>
+          <span class="badge">TUÂN THỦ VANGUARD - CHỈ PHÂN TÍCH SAU TRẬN - BẢO VỆ BỞI RSO</span>
+          <h1>Xem lại Video Replay &amp; Phân tích chiến thuật sau trận cho VALORANT</h1>
+          <p style="max-width:60ch;">
+            TacticalReplayAI là nền tảng huấn luyện cộng đồng miễn phí giúp người chơi VALORANT tự động xem lại các trận đấu đã kết thúc bằng cách ghép clip quay qua Overwolf với thống kê kinh tế từng round, bảng vẽ Telestrator và trợ lý AI Coach.
+          </p>
+          <div class="cta-row">
+            <a class="btn-primary" href="/demo">Mở bản thử nghiệm Web tương tác (/demo)</a>
+            <a class="btn-secondary" href="https://github.com/kietthanh080-lab/fps-tactical-coach" target="_blank" rel="noreferrer">Xem mã nguồn GitHub</a>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Cam kết Fair Play &amp; Chính sách Riot Games</h3>
+          <ul style="padding-left:18px;margin:10px 0 0;">
+            <li><strong>Chỉ hoạt động sau trận (Post-Match Only):</strong> Không hiển thị overlay khi đang bắn, không soi rank hay tướng đối thủ trước trận, không theo dõi kinh tế địch theo thời gian thực.</li>
+            <li><strong>Bảo mật qua Riot Sign On (RSO):</strong> Người chơi tự nguyện đăng nhập bằng RSO mới xem được lịch sử 20 trận gần nhất và báo cáo cá nhân.</li>
+            <li><strong>Không Store Checker / Không MMR ẩn:</strong> Tuyệt đối không kiểm tra shop vật phẩm, không tính điểm MMR ẩn và không công khai bảng xếp hạng người lạ.</li>
+            <li><strong>Không đọc bộ nhớ game:</strong> Chỉ dùng API chính thức của Riot Games và API ghi hình hợp lệ của Overwolf.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2>Trải nghiệm người dùng &amp; Luồng dữ liệu API</h2>
+      <p>Kiến trúc tổng thể minh họa cách người chơi xác thực RSO và tự xem lại các trận đã kết thúc mà không cần cài thêm phần mềm bên thứ ba để xem bản demo.</p>
+
+      <div class="flow-grid">
+        <div class="flow-step">
+          <span class="step-tag">BƯỚC 01 - XÁC THỰC</span>
+          <h3>Riot Sign On (RSO)</h3>
+          <p>Người chơi bấm đăng nhập OAuth2 trên trình duyệt (<span class="mono">auth.riotgames.com</span>, scope: <span class="mono">openid offline_access</span>). Máy chủ xác nhận state và lấy PUUID qua <span class="mono">ACCOUNT-V1</span>.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-tag">BƯỚC 02 - GHI HÌNH</span>
+          <h3>Clip Replay nội bộ</h3>
+          <p>Trong trận đấu, Overwolf chỉ ghi video cục bộ (hoặc Highlight ~23s quanh mỗi mạng hạ gục) và lưu mốc thời gian round để tua nhanh sau khi hết trận.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-tag">BƯỚC 03 - API SAU TRẬN</span>
+          <h3>Phân tích VAL-MATCH-V1</h3>
+          <p>Sau khi trận kết thúc, hệ thống đọc dữ liệu trận đã xong qua <span class="mono">val-match-v1</span> để phân loại kinh tế (Eco, Force, Bonus, Full Buy) và phát hiện lỗi chết lẻ.</p>
+        </div>
+        <div class="flow-step">
+          <span class="step-tag">BƯỚC 04 - COACHING UI</span>
+          <h3>Telestrator &amp; AI Debrief</h3>
+          <p>Trong ứng dụng Cockpit, người chơi bấm mốc từng round, vẽ mũi tên chiến thuật ngay trên video, đồng bộ Kho Sens &amp; Tâm và hỏi đáp với AI Coach.</p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:26px;">
+        <h3>Phạm vi Endpoint Riot API sử dụng</h3>
+        <table class="api-table">
+          <thead>
+            <tr>
+              <th>Sản phẩm API</th>
+              <th>Endpoint sử dụng</th>
+              <th>Mục đích &amp; Thời điểm gọi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Riot Sign On (RSO)</strong></td>
+              <td class="mono">/authorize, /token</td>
+              <td>Xác minh chính chủ tài khoản Riot trước khi mở khóa lịch sử trận đấu và replay cá nhân.</td>
+            </tr>
+            <tr>
+              <td><strong>ACCOUNT-V1</strong></td>
+              <td class="mono">/riot/account/v1/accounts/me<br/>/riot/account/v1/active-shards/by-game/val/by-puuid/{puuid}</td>
+              <td>Lấy PUUID, Game Name, Tag Line và khu vực (shard) của tài khoản vừa đăng nhập.</td>
+            </tr>
+            <tr>
+              <td><strong>VAL-MATCH-V1</strong></td>
+              <td class="mono">/val/match/v1/matchlists/by-puuid/{puuid}<br/>/val/match/v1/matches/{matchId}</td>
+              <td>Đồng bộ tối đa 20 trận đã hoàn thành gần nhất của chính tài khoản đó để tổng hợp kinh tế round và hiệu suất vũ khí.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      `,
+      false
     )
   );
 });
 
-// 2. GET /demo — Public Interactive Web Prototype for Riot API Reviewers (Zero Login / Zero Download)
-router.get('/demo', (_req: Request, res: Response) => {
+// 2. GET /demo - Ban thu nghiem Web tuong tac (khong can dang nhap / tai app)
+router.get('/demo', (req: Request, res: Response) => {
+  const isEn = isEnglishMode(req);
+
   const demoStyles = `
   <style>
     .demo-banner {
@@ -544,43 +687,58 @@ router.get('/demo', (_req: Request, res: Response) => {
 
   res.send(
     layout(
-      'Interactive Web Prototype',
+      '/demo',
+      isEn ? 'Interactive Web Prototype' : 'Bản thử nghiệm Web tương tác',
       `
       <div class="demo-banner">
         <div>
-          <strong style="color:#E59A23;">PUBLIC REVIEW PROTOTYPE (SAMPLE DATA)</strong>
-          <span style="color:#cbd5e1;"> - Interactive web walkthrough for Riot API reviewers. No login or external download required; production match access is strictly gated behind Riot Sign On (RSO).</span>
+          <strong style="color:#E59A23;">${
+            isEn
+              ? 'PUBLIC REVIEW PROTOTYPE (SAMPLE DATA)'
+              : 'BẢN THỬ NGHIỆM CÔNG KHAI (DỮ LIỆU MẪU)'
+          }</strong>
+          <span style="color:#cbd5e1;"> - ${
+            isEn
+              ? 'Interactive web walkthrough for Riot API reviewers. No login or external download required; production match access is strictly gated behind Riot Sign On (RSO).'
+              : 'Môi trường dùng thử trực tiếp giao diện Cockpit trên web, không cần đăng nhập hay tải app. Trên bản thật, lịch sử trận đấu được khóa bảo vệ bằng Riot Sign On (RSO).'
+          }</span>
         </div>
-        <button id="rsoSimBtn" type="button" class="btn-primary" style="padding:8px 14px;font-size:12px;">Simulate RSO Login Flow</button>
+        <button id="rsoSimBtn" type="button" class="btn-primary" style="padding:8px 14px;font-size:12px;">
+          ${isEn ? 'Simulate RSO Login Flow' : 'Mô phỏng luồng đăng nhập RSO'}
+        </button>
       </div>
 
       <div id="rsoFlowLog" class="rso-sim-box" style="display:none;"></div>
 
       <div class="cockpit">
-        <!-- Left: Sample 20-Match Rolling Queue -->
         <aside class="panel">
           <div class="panel-title">
-            <span>20-Match History (Demo)</span>
+            <span>${isEn ? '20-Match History (Demo)' : 'Lịch sử 20 trận (Mẫu)'}</span>
             <span class="mono">RSO SYNC</span>
           </div>
           <div id="matchList"></div>
           <p style="font-size:11px;color:#64748B;margin:10px 0 0;">
-            In production, matches are fetched strictly post-match using the signed-in user's RSO PUUID via <span class="mono">val-match-v1</span>.
+            ${
+              isEn
+                ? 'In production, matches are fetched strictly post-match using the signed-in user\'s RSO PUUID via <span class="mono">val-match-v1</span>.'
+                : 'Ở chế độ thực tế, danh sách trận chỉ được tải sau khi kết thúc trận đấu bằng PUUID đã xác thực RSO qua <span class="mono">val-match-v1</span>.'
+            }
           </p>
         </aside>
 
-        <!-- Center: Replay Canvas + Telestrator + Round Timeline -->
         <section class="panel">
           <div class="toolbar">
             <div>
-              <strong id="stageTitle" style="font-size:15px;">Ascent (VICTORY 13-9)</strong>
-              <div id="stageSubtitle" class="mono" style="color:#94A3B8;font-size:11px;">Round 01 - Post-Match Replay Canvas (Click &amp; drag to draw)</div>
+              <strong id="stageTitle" style="font-size:15px;">Ascent (13-9)</strong>
+              <div id="stageSubtitle" class="mono" style="color:#94A3B8;font-size:11px;">
+                ${isEn ? 'Round 01 - Post-Match Replay Canvas (Drag to draw)' : 'Round 01 - Bảng vẽ Replay sau trận (Kéo chuột để vẽ)'}
+              </div>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
-              <button type="button" class="tool-btn active" data-tool="arrow">Arrow</button>
-              <button type="button" class="tool-btn" data-tool="circle">Circle</button>
-              <button type="button" class="tool-btn" data-tool="pen">Pen</button>
-              <button type="button" class="tool-btn" id="clearDrawBtn">Clear Drawings</button>
+              <button type="button" class="tool-btn active" data-tool="arrow">${isEn ? 'Arrow' : 'Mũi tên'}</button>
+              <button type="button" class="tool-btn" data-tool="circle">${isEn ? 'Circle' : 'Khoanh vùng'}</button>
+              <button type="button" class="tool-btn" data-tool="pen">${isEn ? 'Pen' : 'Bút vẽ'}</button>
+              <button type="button" class="tool-btn" id="clearDrawBtn">${isEn ? 'Clear Drawings' : 'Xóa nét vẽ'}</button>
             </div>
           </div>
 
@@ -589,22 +747,21 @@ router.get('/demo', (_req: Request, res: Response) => {
           </div>
 
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;color:#94A3B8;">
-            <span class="mono" id="timelineMarkerInfo">Timeline Marker: 00:42 - Round 01 (Opening Pick)</span>
-            <span class="mono">Telestrator Active</span>
+            <span class="mono" id="timelineMarkerInfo">Timeline Marker: 00:42 - Round 01</span>
+            <span class="mono">${isEn ? 'Telestrator Active' : 'Telestrator sẵn sàng'}</span>
           </div>
 
           <div class="panel-title" style="margin-top:16px;">
-            <span>Round-by-Round Breakdown</span>
-            <span class="mono">SELECT ROUND</span>
+            <span>${isEn ? 'Round-by-Round Breakdown' : 'Diễn biến từng Round'}</span>
+            <span class="mono">${isEn ? 'SELECT ROUND' : 'CHỌN ROUND'}</span>
           </div>
           <div id="roundGrid" class="round-grid"></div>
         </section>
 
-        <!-- Right: Tactical Analysis & AI Coach -->
         <aside class="panel">
           <div class="tab-row">
-            <button type="button" class="tab-btn active" data-tab="round">Round Detail</button>
-            <button type="button" class="tab-btn" data-tab="match">Match Summary</button>
+            <button type="button" class="tab-btn active" data-tab="round">${isEn ? 'Round Detail' : 'Chi tiết Round'}</button>
+            <button type="button" class="tab-btn" data-tab="match">${isEn ? 'Match Summary' : 'Tổng kết trận'}</button>
             <button type="button" class="tab-btn" data-tab="coach">AI Coach</button>
           </div>
           <div id="inspectorBody"></div>
@@ -613,7 +770,8 @@ router.get('/demo', (_req: Request, res: Response) => {
 
       <script>
         (function() {
-          var sampleMatches = [
+          var isEn = ${isEn ? 'true' : 'false'};
+          var sampleMatches = isEn ? [
             {
               id: 'sample-ascent-01',
               map: 'Ascent',
@@ -644,6 +802,37 @@ router.get('/demo', (_req: Request, res: Response) => {
                 { num: 22, res: 'LOSS', kda: '1/1/0', dmg: 135, eco: 'ECO', style: 'DEFAULT_CONTROL', weapon: 'Ghost', time: '36:12', good: [], bad: ['Lost post-plant crossfire due to wide swing with 10s left.'] }
               ]
             }
+          ] : [
+            {
+              id: 'sample-ascent-01',
+              map: 'Ascent',
+              mode: 'ĐẤU HẠNG',
+              result: 'CHIẾN THẮNG',
+              score: '13-9 - 21/14/6 KDA',
+              overallScore: 8.4,
+              commentary: 'Kiểm soát A-Main tốt (420 sát thương ở Round 05) và tận dụng tốt round Eco. Cần cải thiện phối hợp trade kill khi thủ B-Lane.',
+              rounds: [
+                { num: 1, res: 'THẮNG', kda: '2/0/1', dmg: 265, eco: 'ECO', style: 'ĐẨY NHANH', weapon: 'Classic / Ghost', time: '00:42', good: ['Mạng mở giao tranh: Thắng tay đôi đầu ở A-Main tạo lợi thế 5v4.','Thắng round lục nhờ phối hợp utility vào A-Site.'], bad: [] },
+                { num: 3, res: 'THUA', kda: '0/1/0', dmg: 40, eco: 'FORCE_BUY', style: 'KIỂM SOÁT CHẬM', weapon: 'Spectre', time: '04:15', good: [], bad: ['Chết lẻ không có người đổi mạng: Peek Mid Catwalk một mình khi chưa có flash hỗ trợ.'] },
+                { num: 5, res: 'THẮNG', kda: '3/0/0', dmg: 420, eco: 'FULL_BUY', style: 'ĐẨY NHANH', weapon: 'Vandal', time: '08:10', good: ['Multi-Kill (3K): Giữ góc kê A-Heaven cực chắc sau khi đặt Spike.'], bad: [] },
+                { num: 12, res: 'THUA', kda: '1/1/1', dmg: 145, eco: 'BONUS', style: 'ĐẢO CÁNH', weapon: 'Sheriff', time: '19:30', good: ['Gây lượng sát thương tốt trong round Bonus.'], bad: ['Dư kỹ năng: Bị hạ gục khi vẫn còn 2 chiêu chưa dùng lúc retake.'] }
+              ]
+            },
+            {
+              id: 'sample-haven-02',
+              map: 'Haven',
+              mode: 'ĐẤU HẠNG',
+              result: 'THẤT BẠI',
+              score: '11-13 - 18/17/5 KDA',
+              overallScore: 6.8,
+              commentary: 'Mở góc bắn tỉa C-Long khá tốt đầu trận, nhưng ép mua Force Buy liên tiếp cuối trận khiến hụt tiền ở Round 22.',
+              rounds: [
+                { num: 2, res: 'THẮNG', kda: '2/1/0', dmg: 290, eco: 'FULL_BUY', style: 'KIỂM SOÁT CHẬM', weapon: 'Bulldog', time: '02:20', good: ['Multi-Kill (2K): Đẩy lùi pha ép Garage gọn gàng.'], bad: [] },
+                { num: 8, res: 'THUA', kda: '0/1/0', dmg: 0, eco: 'FORCE_BUY', style: 'KIỂM SOÁT CHẬM', weapon: 'Sheriff', time: '12:55', good: [], bad: ['Chết lẻ không trade: Dry-peek ra C-Long đối đầu thẳng Operator của địch.'] },
+                { num: 15, res: 'THẮNG', kda: '2/0/1', dmg: 310, eco: 'FULL_BUY', style: 'ĐẨY NHANH', weapon: 'Phantom', time: '24:40', good: ['Mạng mở tỷ số: Chiếm A-Short và đặt Spike sớm.'], bad: [] },
+                { num: 22, res: 'THUA', kda: '1/1/0', dmg: 135, eco: 'ECO', style: 'KIỂM SOÁT CHẬM', weapon: 'Ghost', time: '36:12', good: [], bad: ['Mất lợi thế kê chéo hậu Spike do tự mở rộng góc khi chỉ còn 10 giây.'] }
+              ]
+            }
           ];
 
           var state = {
@@ -654,7 +843,9 @@ router.get('/demo', (_req: Request, res: Response) => {
             shapes: [],
             drawing: false,
             current: null,
-            coachReply: 'Select a sample prompt below to preview how AI Coach explains mistakes from completed match telemetry.'
+            coachReply: isEn
+              ? 'Select a sample prompt below to preview how AI Coach explains mistakes from completed match telemetry.'
+              : 'Chọn một câu hỏi mẫu bên dưới để xem AI Coach phân tích sai sót từ dữ liệu sau trận.'
           };
 
           var canvas = document.getElementById('replayCanvas');
@@ -666,7 +857,6 @@ router.get('/demo', (_req: Request, res: Response) => {
             ctx.fillStyle = '#0A0D12';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Tactical grid & sample map geometry
             ctx.strokeStyle = 'rgba(35, 43, 59, 0.7)';
             ctx.lineWidth = 1;
             for (var x = 0; x <= canvas.width; x += 40) {
@@ -676,7 +866,6 @@ router.get('/demo', (_req: Request, res: Response) => {
               ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
             }
 
-            // Simulated tactical site & lane schematics
             ctx.strokeStyle = '#334155';
             ctx.lineWidth = 2;
             ctx.strokeRect(80, 75, 220, 140);
@@ -690,32 +879,29 @@ router.get('/demo', (_req: Request, res: Response) => {
 
             ctx.fillStyle = '#94A3B8';
             ctx.font = 'bold 13px monospace';
-            ctx.fillText('A SITE - POST-MATCH REPLAY FRAME', 96, 102);
-            ctx.fillText('B SITE - LANE CONTROL', 518, 102);
-            ctx.fillText('MID COURTYARD', 345, 258);
+            ctx.fillText(isEn ? 'A SITE - POST-MATCH REPLAY FRAME' : 'A SITE - KHUNG HÌNH REPLAY SAU TRẬN', 96, 102);
+            ctx.fillText(isEn ? 'B SITE - LANE CONTROL' : 'B SITE - KIỂM SOÁT LANE', 518, 102);
+            ctx.fillText(isEn ? 'MID COURTYARD' : 'KHU VỰC MID', 345, 258);
 
-            // Round telemetry HUD overlay inside replay frame
             ctx.fillStyle = 'rgba(16, 20, 28, 0.9)';
-            ctx.fillRect(16, 16, 360, 44);
+            ctx.fillRect(16, 16, 370, 44);
             ctx.strokeStyle = '#FF4655';
             ctx.lineWidth = 1.5;
-            ctx.strokeRect(16, 16, 360, 44);
+            ctx.strokeRect(16, 16, 370, 44);
             ctx.fillStyle = '#EEF2F6';
             ctx.font = 'bold 13px monospace';
             ctx.fillText(m.map.toUpperCase() + ' // ROUND ' + String(r.num).padStart(2, '0') + ' // ' + r.eco, 28, 43);
 
-            // Sample player & event markers
             ctx.fillStyle = '#10B981';
             ctx.beginPath(); ctx.arc(190, 155, 9, 0, Math.PI * 2); ctx.fill();
             ctx.fillStyle = '#EEF2F6';
             ctx.font = '11px monospace';
-            ctx.fillText('PLAYER (' + r.weapon + ')', 206, 159);
+            ctx.fillText((isEn ? 'PLAYER (' : 'NGƯỜI CHƠI (') + r.weapon + ')', 206, 159);
 
             ctx.fillStyle = '#FF4655';
             ctx.beginPath(); ctx.arc(580, 150, 9, 0, Math.PI * 2); ctx.fill();
-            ctx.fillText('ENGAGEMENT ZONE', 596, 154);
+            ctx.fillText(isEn ? 'ENGAGEMENT ZONE' : 'ĐIỂM GIAO TRANH', 596, 154);
 
-            // Draw user telestrator annotations
             var all = state.current ? state.shapes.concat([state.current]) : state.shapes;
             all.forEach(function(sh) {
               if (!sh.points.length) return;
@@ -778,16 +964,18 @@ router.get('/demo', (_req: Request, res: Response) => {
           function render() {
             var m = sampleMatches[state.matchIdx];
             var r = m.rounds[state.roundIdx];
+            var isWinMatch = m.result === 'VICTORY' || m.result === 'CHIẾN THẮNG';
 
             document.getElementById('stageTitle').textContent = m.map + ' (' + m.result + ' ' + m.score.split(' - ')[0] + ')';
-            document.getElementById('stageSubtitle').textContent = 'Round ' + String(r.num).padStart(2, '0') + ' - ' + r.weapon + ' - Post-Match Replay Canvas (Drag to draw)';
-            document.getElementById('timelineMarkerInfo').textContent = 'Timeline Marker: ' + r.time + ' - Round ' + String(r.num).padStart(2, '0') + ' (' + r.eco + ')';
+            document.getElementById('stageSubtitle').textContent = 'Round ' + String(r.num).padStart(2, '0') + ' - ' + r.weapon + (isEn ? ' - Post-Match Replay Canvas (Drag to draw)' : ' - Bảng vẽ Replay sau trận (Kéo chuột để vẽ)');
+            document.getElementById('timelineMarkerInfo').textContent = (isEn ? 'Timeline Marker: ' : 'Mốc thời gian: ') + r.time + ' - Round ' + String(r.num).padStart(2, '0') + ' (' + r.eco + ')';
 
             var matchHtml = '';
             sampleMatches.forEach(function(item, idx) {
+              var winFlag = item.result === 'VICTORY' || item.result === 'CHIẾN THẮNG';
               matchHtml += '<button type="button" class="match-btn ' + (idx === state.matchIdx ? 'active' : '') + '" data-match="' + idx + '">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">' +
-                '<span class="pill ' + (item.result === 'VICTORY' ? 'pill-win' : 'pill-loss') + '">' + item.result + '</span>' +
+                '<span class="pill ' + (winFlag ? 'pill-win' : 'pill-loss') + '">' + item.result + '</span>' +
                 '<span class="mono" style="color:#64748B;font-size:10px;">' + item.mode + '</span></div>' +
                 '<strong style="display:block;font-size:14px;">' + item.map + '</strong>' +
                 '<span class="mono" style="color:#94A3B8;font-size:11px;">' + item.score + '</span></button>';
@@ -796,10 +984,11 @@ router.get('/demo', (_req: Request, res: Response) => {
 
             var roundHtml = '';
             m.rounds.forEach(function(rd, idx) {
+              var rdWin = rd.res === 'WIN' || rd.res === 'THẮNG';
               roundHtml += '<button type="button" class="round-card ' + (idx === state.roundIdx ? 'active' : '') + '" data-round="' + idx + '">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">' +
                 '<strong class="mono" style="font-size:12px;">R' + String(rd.num).padStart(2, '0') + '</strong>' +
-                '<span class="pill ' + (rd.res === 'WIN' ? 'pill-win' : 'pill-loss') + '">' + rd.res + '</span></div>' +
+                '<span class="pill ' + (rdWin ? 'pill-win' : 'pill-loss') + '">' + rd.res + '</span></div>' +
                 '<div class="mono" style="font-size:11px;color:#cbd5e1;">' + rd.kda + ' - ' + rd.dmg + ' DMG</div>' +
                 '<div class="mono" style="font-size:10px;color:#64748B;margin-top:4px;">' + rd.eco + '</div></button>';
             });
@@ -807,33 +996,34 @@ router.get('/demo', (_req: Request, res: Response) => {
 
             var bodyHtml = '';
             if (state.tab === 'round') {
+              var curWin = r.res === 'WIN' || r.res === 'THẮNG';
               bodyHtml += '<div style="border-bottom:1px solid #232B3B;padding-bottom:10px;margin-bottom:10px;">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;">' +
                 '<strong style="font-size:16px;">Round ' + String(r.num).padStart(2, '0') + '</strong>' +
-                '<span class="pill ' + (r.res === 'WIN' ? 'pill-win' : 'pill-loss') + '">' + r.res + '</span></div>' +
-                '<div class="mono" style="color:#94A3B8;font-size:11px;margin-top:4px;">K/D/A: ' + r.kda + ' - Damage: ' + r.dmg + '</div></div>' +
+                '<span class="pill ' + (curWin ? 'pill-win' : 'pill-loss') + '">' + r.res + '</span></div>' +
+                '<div class="mono" style="color:#94A3B8;font-size:11px;margin-top:4px;">K/D/A: ' + r.kda + ' - ' + (isEn ? 'Damage: ' : 'Sát thương: ') + r.dmg + '</div></div>' +
                 '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
-                '<span class="pill pill-eco">Economy: ' + r.eco + '</span>' +
+                '<span class="pill pill-eco">' + (isEn ? 'Economy: ' : 'Kinh tế: ') + r.eco + '</span>' +
                 '<span class="pill" style="background:#171D28;color:#EEF2F6;border:1px solid #334155;">' + r.style + '</span></div>' +
-                '<h3 style="font-size:11px;color:#34d399;text-transform:uppercase;margin-bottom:6px;">Strengths</h3>';
+                '<h3 style="font-size:11px;color:#34d399;text-transform:uppercase;margin-bottom:6px;">' + (isEn ? 'Strengths' : 'Điểm làm tốt') + '</h3>';
               if (r.good.length) r.good.forEach(function(g){ bodyHtml += '<div class="callout-good">' + g + '</div>'; });
-              else bodyHtml += '<p style="font-size:12px;color:#64748B;">No notable tactical spikes in this round.</p>';
+              else bodyHtml += '<p style="font-size:12px;color:#64748B;">' + (isEn ? 'No notable tactical spikes in this round.' : 'Chưa ghi nhận điểm nhấn nổi bật ở round này.') + '</p>';
 
-              bodyHtml += '<h3 style="font-size:11px;color:#E59A23;text-transform:uppercase;margin:12px 0 6px;">Tactical Mistakes</h3>';
+              bodyHtml += '<h3 style="font-size:11px;color:#E59A23;text-transform:uppercase;margin:12px 0 6px;">' + (isEn ? 'Tactical Mistakes' : 'Lỗi chiến thuật cần sửa') + '</h3>';
               if (r.bad.length) r.bad.forEach(function(b){ bodyHtml += '<div class="callout-warn">' + b + '</div>'; });
-              else bodyHtml += '<p style="font-size:12px;color:#64748B;">Clean round positioning, zero untraded errors.</p>';
+              else bodyHtml += '<p style="font-size:12px;color:#64748B;">' + (isEn ? 'Clean round positioning, zero untraded errors.' : 'Giữ vị trí gọn gàng, không mắc lỗi chết lẻ.') + '</p>';
             } else if (state.tab === 'match') {
               bodyHtml += '<div style="padding:10px;background:#0A0D12;border:1px solid #232B3B;border-radius:2px;margin-bottom:12px;">' +
-                '<div class="mono" style="color:#E59A23;font-size:12px;font-weight:700;">POST-MATCH SCORE: ' + m.overallScore + ' / 10</div>' +
+                '<div class="mono" style="color:#E59A23;font-size:12px;font-weight:700;">' + (isEn ? 'POST-MATCH SCORE: ' : 'ĐIỂM ĐÁNH GIÁ SAU TRẬN: ') + m.overallScore + ' / 10</div>' +
                 '<p style="font-size:12px;margin:6px 0 0;">' + m.commentary + '</p></div>' +
-                '<h3 style="font-size:11px;color:#38bdf8;text-transform:uppercase;">Recommended Drills</h3>' +
-                '<div class="callout-good">10 min Deathmatch focusing on A-Main headshot crosshair height before queuing.</div>' +
-                '<div class="callout-warn">Pair up within 1.5s of entry duelist on Force Buy rounds to ensure trade kills.</div>';
+                '<h3 style="font-size:11px;color:#38bdf8;text-transform:uppercase;">' + (isEn ? 'Recommended Drills' : 'Bài tập đề xuất') + '</h3>' +
+                '<div class="callout-good">' + (isEn ? '10 min Deathmatch focusing on A-Main headshot crosshair height before queuing.' : '10 phút Deathmatch giữ tâm ngang đầu khu vực A-Main trước khi vào đấu hạng.') + '</div>' +
+                '<div class="callout-warn">' + (isEn ? 'Pair up within 1.5s of entry duelist on Force Buy rounds to ensure trade kills.' : 'Đi cặp cách đồng đội 1.5s ở các round Force Buy để đảm bảo đổi mạng.') + '</div>';
             } else {
               bodyHtml += '<div style="padding:10px;background:#0A0D12;border:1px solid #232B3B;border-radius:2px;margin-bottom:10px;font-size:12px;">' +
                 state.coachReply + '</div>' +
-                '<button type="button" class="match-btn" data-prompt="eco">Ask: Why did we lose Force Buy rounds?</button>' +
-                '<button type="button" class="match-btn" data-prompt="pos">Ask: Analyze my positioning in Round ' + String(r.num).padStart(2, '0') + '</button>';
+                '<button type="button" class="match-btn" data-prompt="eco">' + (isEn ? 'Ask: Why did we lose Force Buy rounds?' : 'Hỏi: Vì sao đội hay thua ở các round Force Buy?') + '</button>' +
+                '<button type="button" class="match-btn" data-prompt="pos">' + (isEn ? 'Ask: Analyze my positioning in Round ' : 'Hỏi: Phân tích vị trí đứng của tôi ở Round ') + String(r.num).padStart(2, '0') + '</button>';
             }
             document.getElementById('inspectorBody').innerHTML = bodyHtml;
 
@@ -855,9 +1045,13 @@ router.get('/demo', (_req: Request, res: Response) => {
               btn.addEventListener('click', function() {
                 var p = btn.getAttribute('data-prompt');
                 if (p === 'eco') {
-                  state.coachReply = '<strong>AI Coach:</strong> In Round 03 (Force Buy), your team averaged 2,400 credits against rifles. Dry-peeking Mid Catwalk resulted in an untraded death before utility landed.';
+                  state.coachReply = isEn
+                    ? '<strong>AI Coach:</strong> In Round 03 (Force Buy), your team averaged 2,400 credits against rifles. Dry-peeking Mid Catwalk resulted in an untraded death before utility landed.'
+                    : '<strong>AI Coach:</strong> Ở Round 03 (Force Buy), lượng tiền trung bình chỉ khoảng 2.400 credits khi địch đã có súng dài. Pha tự mở góc ở Mid Catwalk khiến bạn chết lẻ trước khi có smoke hoặc flash che.';
                 } else {
-                  state.coachReply = '<strong>AI Coach (R' + String(r.num).padStart(2, '0') + '):</strong> Using ' + r.weapon + ' (' + r.dmg + ' DMG), prioritize holding crossfire angles with teammates so every early duel is tradable within 3 seconds.';
+                  state.coachReply = isEn
+                    ? '<strong>AI Coach (R' + String(r.num).padStart(2, '0') + '):</strong> Using ' + r.weapon + ' (' + r.dmg + ' DMG), prioritize holding crossfire angles with teammates so every early duel is tradable within 3 seconds.'
+                    : '<strong>AI Coach (R' + String(r.num).padStart(2, '0') + '):</strong> Khi cầm ' + r.weapon + ' (' + r.dmg + ' sát thương), hãy giữ góc kê chéo cùng đồng đội để mọi pha đọ súng đầu round đều có thể trade kill trong vòng 3 giây.';
                 }
                 render();
               });
@@ -890,28 +1084,39 @@ router.get('/demo', (_req: Request, res: Response) => {
           document.getElementById('rsoSimBtn').addEventListener('click', function() {
             var box = document.getElementById('rsoFlowLog');
             box.style.display = 'block';
-            box.innerHTML = '<strong style="color:#34d399;">Simulated RSO OAuth2 Handshake:</strong> ' +
-              '1) Desktop opens <span class="mono">https://auth.riotgames.com/authorize?scope=openid+offline_access</span> &rarr; ' +
-              '2) Callback exchanges code at <span class="mono">/api/auth/riot/callback</span> &rarr; ' +
-              '3) Server calls <span class="mono">/riot/account/v1/accounts/me</span> &rarr; ' +
-              '4) Signed-in session unlocks personal <span class="mono">val-match-v1</span> post-match history below.';
+            box.innerHTML = isEn
+              ? '<strong style="color:#34d399;">Simulated RSO OAuth2 Handshake:</strong> ' +
+                '1) Desktop opens <span class="mono">https://auth.riotgames.com/authorize?scope=openid+offline_access</span> &rarr; ' +
+                '2) Callback exchanges code at <span class="mono">/api/auth/riot/callback</span> &rarr; ' +
+                '3) Server calls <span class="mono">/riot/account/v1/accounts/me</span> &rarr; ' +
+                '4) Signed-in session unlocks personal <span class="mono">val-match-v1</span> post-match history below.'
+              : '<strong style="color:#34d399;">Mô phỏng xác thực RSO OAuth2:</strong> ' +
+                '1) App mở <span class="mono">https://auth.riotgames.com/authorize?scope=openid+offline_access</span> &rarr; ' +
+                '2) Callback đổi mã xác thực tại <span class="mono">/api/auth/riot/callback</span> &rarr; ' +
+                '3) Server gọi <span class="mono">/riot/account/v1/accounts/me</span> lấy PUUID chính chủ &rarr; ' +
+                '4) Phiên đăng nhập mở khóa 20 trận <span class="mono">val-match-v1</span> cá nhân ở dưới.';
           });
 
           render();
         })();
       </script>
       `,
+      isEn,
       demoStyles
     )
   );
 });
 
-// 3. GET /privacy — Privacy Policy
-router.get('/privacy', (_req: Request, res: Response) => {
-  res.send(
-    layout(
-      'Privacy Policy',
-      `
+// 3. GET /privacy - Chinh sach bao mat
+router.get('/privacy', (req: Request, res: Response) => {
+  const isEn = isEnglishMode(req);
+
+  if (isEn) {
+    res.send(
+      layout(
+        '/privacy',
+        'Privacy Policy',
+        `
       <div class="card">
         <h1>Privacy Policy</h1>
         <p><strong>Effective Date:</strong> November 21, 2026</p>
@@ -930,17 +1135,52 @@ router.get('/privacy', (_req: Request, res: Response) => {
         <h2>3. Data Retention &amp; Deletion</h2>
         <p>We store only a rolling window of your 20 most recent matches; older match records and associated highlight files are automatically purged. You may disconnect your Riot account or request complete deletion of your stored profile and match records at any time by contacting <strong>kietthanh080@gmail.com</strong>.</p>
       </div>
+      `,
+        true
+      )
+    );
+    return;
+  }
+
+  res.send(
+    layout(
+      '/privacy',
+      'Chính sách bảo mật',
       `
+      <div class="card">
+        <h1>Chính sách bảo mật</h1>
+        <p><strong>Ngày có hiệu lực:</strong> 21/11/2026</p>
+        <p>TacticalReplayAI ("chúng tôi" hoặc "Ứng dụng") là dịch vụ hỗ trợ xem lại và phân tích chiến thuật sau trận đấu dành cho cộng đồng người chơi VALORANT &amp; PUBG. Chúng tôi tôn trọng quyền riêng tư và bảo vệ dữ liệu tài khoản của người chơi khi bạn tự nguyện đăng nhập qua Riot Sign On (RSO) hoặc Steam.</p>
+
+        <h2>1. Thông tin chúng tôi thu thập</h2>
+        <ul>
+          <li><strong>Định danh tài khoản Riot (qua RSO):</strong> Mã PUUID, Riot Game Name và Tag Line của bạn chỉ được lấy sau khi bạn đồng ý cấp quyền OAuth2 qua Riot Sign On (<span class="mono">/riot/account/v1/accounts/me</span>).</li>
+          <li><strong>Số liệu trận đấu sau trận:</strong> Lịch sử tối đa 20 trận đã hoàn thành, kết quả từng round, lượng sát thương, vũ khí và mức kinh tế lấy từ API chính thức của Riot Games (<span class="mono">VAL-MATCH-V1</span>) hoặc PUBG Official API dành riêng cho chính tài khoản đã đăng nhập.</li>
+          <li><strong>Video Highlight &amp; Cấu hình cá nhân:</strong> Video quay nội bộ bằng Overwolf (hoặc bạn tự tải lên) và cấu hình DPI / Sensitivity / Crosshair mà bạn chủ động lưu trong Kho Sens &amp; Tâm.</li>
+        </ul>
+
+        <h2>2. Cách chúng tôi sử dụng dữ liệu</h2>
+        <p>Dữ liệu thu thập chỉ dùng để xác thực phiên đăng nhập, hiển thị tối đa 20 trận gần nhất, tạo bảng phân tích chiến thuật sau trận đấu và chia sẻ bảng xếp hạng riêng tư trong Squad do bạn tự mời hoặc tham gia. Chúng tôi tuyệt đối không công khai lịch sử trận VALORANT khi chưa xác thực RSO, không tính điểm MMR ẩn và không bán hay chia sẻ dữ liệu cá nhân cho bên thứ ba.</p>
+
+        <h2>3. Lưu trữ &amp; Xóa dữ liệu</h2>
+        <p>Hệ thống chỉ duy trì bộ đệm xoay vòng tối đa 20 trận gần nhất; các trận cũ hơn cùng tệp liên quan sẽ được tự động dọn dẹp. Bạn có thể hủy liên kết tài khoản Riot ngay trong ứng dụng hoặc gửi yêu cầu xóa hoàn toàn hồ sơ và dữ liệu trận đấu bất kỳ lúc nào qua email <strong>kietthanh080@gmail.com</strong>.</p>
+      </div>
+      `,
+      false
     )
   );
 });
 
-// 4. GET /terms — Terms of Service
-router.get('/terms', (_req: Request, res: Response) => {
-  res.send(
-    layout(
-      'Terms of Service',
-      `
+// 4. GET /terms - Dieu khoan dich vu
+router.get('/terms', (req: Request, res: Response) => {
+  const isEn = isEnglishMode(req);
+
+  if (isEn) {
+    res.send(
+      layout(
+        '/terms',
+        'Terms of Service',
+        `
       <div class="card">
         <h1>Terms of Service</h1>
         <p><strong>Effective Date:</strong> November 21, 2026</p>
@@ -955,7 +1195,34 @@ router.get('/terms', (_req: Request, res: Response) => {
         <h2>3. Disclaimer &amp; Limitation of Liability</h2>
         <p>The service is provided "as is" without warranties of any kind. TacticalReplayAI is an independent community project and is not affiliated with, sponsored, or endorsed by Riot Games, Inc.</p>
       </div>
+      `,
+        true
+      )
+    );
+    return;
+  }
+
+  res.send(
+    layout(
+      '/terms',
+      'Điều khoản dịch vụ',
       `
+      <div class="card">
+        <h1>Điều khoản dịch vụ</h1>
+        <p><strong>Ngày có hiệu lực:</strong> 21/11/2026</p>
+        <p>Khi truy cập hoặc sử dụng TacticalReplayAI, bạn đồng ý tuân thủ các Điều khoản dịch vụ này cùng toàn bộ chính sách dành cho nhà phát triển và người chơi của Riot Games &amp; PUBG Corporation.</p>
+
+        <h2>1. Phạm vi sử dụng hợp lệ</h2>
+        <p>TacticalReplayAI là dự án cộng đồng phi thương mại, miễn phí, phục vụ xem lại video và phân tích chiến thuật sau trận đấu. Bạn cam kết không lạm dụng hệ thống, không thu thập dữ liệu trái phép (scraping API) và không tìm cách truy cập dữ liệu riêng tư của người chơi khác khi chưa được ủy quyền qua RSO.</p>
+
+        <h2>2. Tuân thủ Fair Play &amp; Anti-Cheat</h2>
+        <p>Ứng dụng chỉ hoạt động ngoài trận đấu thực tế (Post-Match Only): không chèn overlay gian lận khi đang đấu, không soi thông tin đối thủ trước khi vào trận, không kiểm tra shop vật phẩm, không đọc bộ nhớ tiến trình game và không can thiệp thao tác chuột/bàn phím. Người dùng phải luôn tuân thủ quy tắc Vanguard và BattlEye.</p>
+
+        <h2>3. Miễn trừ trách nhiệm</h2>
+        <p>Dịch vụ được cung cấp theo nguyên trạng ("as is"). TacticalReplayAI là dự án cộng đồng độc lập và không thuộc sở hữu, tài trợ hay chứng thực bởi Riot Games, Inc.</p>
+      </div>
+      `,
+      false
     )
   );
 });

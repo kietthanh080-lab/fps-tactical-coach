@@ -121,6 +121,13 @@ function createMainWindow() {
 
   mainWindow = win;
 
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
   const initialToken = extractTokenFromArgs(process.argv);
   if (initialToken) {
     win.loadFile(indexHtmlPath, { query: { token: initialToken } });
