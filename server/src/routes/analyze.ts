@@ -1019,4 +1019,181 @@ THÔNG TIN TRẬN ĐẤU:
   }
 });
 
+// GET /api/analyze/leaderboard — Tổng hợp bảng xếp hạng thành tích nhóm từ TiDB Cloud
+router.get('/leaderboard', async (req: Request, res: Response) => {
+  try {
+    const gameType = req.query.gameType === 'VALORANT' ? 'VALORANT' : 'PUBG';
+    const dbMod = await import('../config/db');
+    const executor: any =
+      (dbMod as any).pool || (dbMod as any).db || (dbMod as any).default;
+
+    if (!executor?.query) {
+      res.status(500).json({ error: 'Không tìm thấy kết nối cơ sở dữ liệu TiDB.' });
+      return;
+    }
+
+    // Tự động dò tên bảng lưu danh sách trận đấu trong TiDB
+    const [tableRows]: any = await executor.query(
+      `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'match_result'
+       LIMIT 1`
+    );
+    const matchesTable = tableRows?.[0]?.TABLE_NAME || 'matches';
+
+    const [users]: any = await executor.query(
+      `SELECT id, riot_game_name, riot_tag_line, steam_persona_name, steam_avatar, pubg_player_name
+       FROM users`
+    );
+
+    const [matches]: any = await executor.query(
+      `SELECT user_id, match_result, score_summary, cloud_video_url, local_video_filename, played_at
+       FROM \`${matchesTable}\`
+       WHERE game_type = ?
+       ORDER BY played_at DESC`,
+      [gameType]
+    );
+
+    const matchesByUser = new Map<number, any[]>();
+    for (const m of matches || []) {
+      const uid = Number(m.user_id);
+      if (!matchesByUser.has(uid)) matchesByUser.set(uid, []);
+      const list = matchesByUser.get(uid)!;
+      if (list.length < 20) list.push(m); // Giới hạn 20 trận gần nhất mỗi người
+    }
+
+    const leaderboard = (users || [])
+      .map((u: any) => {
+        const uid = Number(u.id);
+        const userMatches = matchesByUser.get(uid) || [];
+        if (userMatches.length === 0) return null;
+
+        let winsOrTop1 = 0;
+        let top10Count = 0;
+        let totalKills = 0;
+        let totalDamage = 0;
+        let highlightCount = 0;
+
+        for (const m of userMatches) {
+          const resultStr = String(m.match_result || '').toUpperCase();
+          const summaryStr = String(m.score_summary || '');
+
+          if (resultStr.includes('TOP #1') || resultStr === 'WIN' || resultStr.includes('VICTORY')) {
+            winsOrTop1 += 1;
+          }
+
+          const rankMatch = resultStr.match(/TOP\s*#?(\d+)/i);
+          if (rankMatch && Number(rankMatch[1]) <= 10) {
+            top10Count += 1;
+          }
+
+          const killsMatch = summaryStr.match(/(\d+)\s*Kills?/i);
+          if (killsMatch) totalKills += Number(killsMatch[1]);
+
+          const dmgMatch = summaryStr.match(/(\d+)\s*DMG/i);
+          if (dmgMatch) totalDamage += Number(dmgMatch[1]);
+
+          if (m.cloud_video_url || m.local_video_filename) {
+            highlightCount += 1;
+          }
+        }
+
+        const displayName =
+          gameType === 'VALORANT'
+            ? u.riot_game_name
+              ? `${u.riot_game_name}#${u.riot_tag_line || ''}`
+              : u.steam_persona_name || `Player #${uid}`
+            : u.pubg_player_name || u.steam_persona_name || `Player #${uid}`;
+
+        const totalMatches = userMatches.length;
+        return {
+          userId: uid,
+          displayName,
+          avatarUrl: u.steam_avatar || null,
+          totalMatches,
+          winsOrTop1,
+          top10Count,
+          avgKills: totalMatches > 0 ? totalKills / totalMatches : 0,
+          avgDamage: totalMatches > 0 ? totalDamage / totalMatches : 0,
+          highlightCount,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a: any, b: any) =>
+          b.winsOrTop1 - a.winsOrTop1 ||
+          b.avgKills - a.avgKills ||
+          b.avgDamage - a.avgDamage
+      );
+
+    res.json({ gameType, leaderboard });
+  } catch (error: any) {
+    console.error('Lỗi /api/analyze/leaderboard:', error);
+    res.status(500).json({ error: 'Không thể tổng hợp bảng xếp hạng lúc này.' });
+  }
+});
+
+// GET /api/analyze/public-match/:matchId — Trang xem nhanh Highlight chia sẻ cho bạn bè
+router.get('/public-match/:matchId', async (req: Request, res: Response) => {
+  try {
+    const matchId = String(req.params.matchId || '').trim();
+    const dbMod = await import('../config/db');
+    const executor: any =
+      (dbMod as any).pool || (dbMod as any).db || (dbMod as any).default;
+
+    const [tableRows]: any = await executor.query(
+      `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'match_result'
+       LIMIT 1`
+    );
+    const matchesTable = tableRows?.[0]?.TABLE_NAME || 'matches';
+
+    const [rows]: any = await executor.query(
+      `SELECT m.*, u.steam_persona_name, u.pubg_player_name, u.riot_game_name, u.riot_tag_line
+       FROM \`${matchesTable}\` m
+       LEFT JOIN users u ON u.id = m.user_id
+       WHERE m.match_id = ?
+       LIMIT 1`,
+      [matchId]
+    );
+
+    const match = rows?.[0];
+    if (!match) {
+      res.status(404).send('<h2>Không tìm thấy trận đấu hoặc clip chia sẻ này.</h2>');
+      return;
+    }
+
+    const playerName =
+      match.game_type === 'VALORANT'
+        ? `${match.riot_game_name || 'Player'}#${match.riot_tag_line || ''}`
+        : match.pubg_player_name || match.steam_persona_name || 'PUBG Player';
+
+    const videoBlock = match.cloud_video_url
+      ? `<video src="${match.cloud_video_url}" controls autoplay style="width:100%;border-radius:12px;background:#000;margin-top:16px;"></video>`
+      : `<div style="padding:32px;border:1px dashed #334155;border-radius:12px;text-align:center;color:#94a3b8;margin-top:16px;">Trận đấu này chưa tải video lên cloud, chỉ chia sẻ thông số kết quả.</div>`;
+
+    res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${playerName} - ${match.map_name} (${match.match_result}) | TacticalReplayAI</title>
+</head>
+<body style="margin:0;background:#020617;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:860px;margin:0 auto;padding:36px 20px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1e293b;padding-bottom:16px;">
+      <strong style="font-size:18px;">TacticalReplay<span style="color:#ff4655;">AI</span></strong>
+      <span style="font-size:12px;color:#34d399;background:rgba(16,185,129,0.12);padding:4px 10px;border-radius:999px;">Shared Match Clip</span>
+    </div>
+    <h1 style="font-size:24px;margin:20px 0 6px;">${match.map_name} • ${match.match_result}</h1>
+    <p style="color:#94a3b8;font-size:14px;margin:0;">Người chơi: <strong style="color:#fff;">${playerName}</strong> • ${match.game_mode || match.game_type} • ${match.score_summary || ''}</p>
+    ${videoBlock}
+  </div>
+</body>
+</html>`);
+  } catch (err) {
+    console.error('Lỗi /api/analyze/public-match:', err);
+    res.status(500).send('Lỗi tải trang chia sẻ.');
+  }
+});
+
 export default router;

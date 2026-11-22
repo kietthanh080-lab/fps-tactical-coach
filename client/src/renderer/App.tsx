@@ -13,6 +13,9 @@ import {
 import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
 import { MatchReportUI, TacticalReport } from './components/TacticalReport';
+import { FriendsLeaderboard } from './components/FriendsLeaderboard';
+import { SettingsVaultModal } from './components/SettingsVaultModal';
+import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
 
@@ -110,6 +113,11 @@ const App: React.FC = () => {
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<PlayerSearchResult | null>(null);
 
+  // State cho Giai đoạn 3 & 4 (Bảng xếp hạng, Kho Sens/Crosshair, Post-Match Recap)
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showSettingsVault, setShowSettingsVault] = useState(false);
+  const [showPostMatchRecap, setShowPostMatchRecap] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [syncingPubg, setSyncingPubg] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -125,6 +133,17 @@ const App: React.FC = () => {
       setTokenState(urlToken);
       window.history.replaceState({}, document.title, window.location.pathname);
     }
+  }, []);
+
+  // Lắng nghe token trả về từ trình duyệt ngoài qua deep-link tacticalreplay://
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.onAuthToken) return;
+    return electronAPI.onAuthToken((receivedToken: string) => {
+      setAuthToken(receivedToken);
+      setTokenState(receivedToken);
+      setStatusMsg(null);
+    });
   }, []);
 
   useEffect(() => {
@@ -143,6 +162,7 @@ const App: React.FC = () => {
           if (res.syncedCount > 0) {
             setStatusMsg(res.message);
             await loadUserVideos('PUBG');
+            setShowPostMatchRecap(true);
             return;
           }
         }
@@ -161,6 +181,7 @@ const App: React.FC = () => {
           if (tabMatches.length > 0) {
             setStatusMsg('Phát hiện trận đấu mới, đã tự động cập nhật danh sách 20 trận gần nhất.');
             await handleSelectMatch(tabMatches[0]);
+            setShowPostMatchRecap(true);
           }
         }
       } catch {
@@ -275,40 +296,31 @@ const App: React.FC = () => {
     }
   };
 
-useEffect(() => {
-  const electronAPI = (window as any).electronAPI;
-  if (!electronAPI?.onAuthToken) return;
-  return electronAPI.onAuthToken((receivedToken: string) => {
-    setAuthToken(receivedToken);
-    setTokenState(receivedToken);
-  });
-}, []);
+  const openAuthUrl = (authUrl: string) => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.openExternal) {
+      void electronAPI.openExternal(authUrl);
+      setStatusMsg('Đã mở trang đăng nhập trên trình duyệt. Vui lòng hoàn tất đăng nhập để quay lại ứng dụng.');
+    } else {
+      window.location.href = authUrl;
+    }
+  };
 
-const openAuthUrl = (authUrl: string) => {
-  const electronAPI = (window as any).electronAPI;
-  if (electronAPI?.openExternal) {
-    void electronAPI.openExternal(authUrl);
-    setStatusMsg('Đã mở trang đăng nhập trên trình duyệt. Vui lòng hoàn tất đăng nhập để quay lại ứng dụng.');
-  } else {
-    window.location.href = authUrl;
-  }
-};
+  const handleSteamLogin = () => {
+    const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
+    const returnTo = isDesktopApp
+      ? 'electron'
+      : encodeURIComponent(window.location.href.split('?')[0]);
+    openAuthUrl(`${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`);
+  };
 
-const handleSteamLogin = () => {
-  const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
-  const returnTo = isDesktopApp
-    ? 'electron'
-    : encodeURIComponent(window.location.href.split('?')[0]);
-  openAuthUrl(`${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`);
-};
-
-const handleRiotLogin = () => {
-  const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
-  const returnTo = isDesktopApp
-    ? 'electron'
-    : encodeURIComponent(window.location.href.split('?')[0]);
-  openAuthUrl(`${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`);
-};
+  const handleRiotLogin = () => {
+    const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
+    const returnTo = isDesktopApp
+      ? 'electron'
+      : encodeURIComponent(window.location.href.split('?')[0]);
+    openAuthUrl(`${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`);
+  };
 
   const handleSyncPubg = async () => {
     setSyncingPubg(true);
@@ -322,6 +334,12 @@ const handleRiotLogin = () => {
     } finally {
       setSyncingPubg(false);
     }
+  };
+
+  const handleCopyShareLink = async (matchId: string) => {
+    const shareUrl = `${API_BASE_URL}/analyze/public-match/${encodeURIComponent(matchId)}`;
+    await navigator.clipboard.writeText(shareUrl);
+    setStatusMsg(`Đã sao chép link chia sẻ trận đấu: ${shareUrl}`);
   };
 
   const handleLogout = () => {
@@ -430,7 +448,7 @@ const handleRiotLogin = () => {
               </form>
 
               {statusMsg && (
-                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-800/80 text-xs text-rose-200 text-center">
+                <div className="p-3 rounded-xl bg-sky-950/70 border border-sky-800/80 text-xs text-sky-200 text-center">
                   {statusMsg}
                 </div>
               )}
@@ -561,7 +579,7 @@ const handleRiotLogin = () => {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       <header className="border-b border-slate-800 px-6 py-3 bg-slate-900/80 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-5">
+        <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2.5">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
@@ -594,6 +612,42 @@ const handleRiotLogin = () => {
             >
               PUBG ({Math.min(20, videos.filter((v) => v.game_type === 'PUBG').length)})
             </button>
+          </div>
+
+          {/* Thanh công cụ Giai đoạn 3 & 4 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowLeaderboard(true)}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-sky-300 transition"
+            >
+              Bảng xếp hạng nhóm
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSettingsVault(true)}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-emerald-300 transition"
+            >
+              Kho Sens &amp; Tâm
+            </button>
+            {activeMatch && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowPostMatchRecap((prev) => !prev)}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-amber-300 transition"
+                >
+                  Tóm tắt trận
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyShareLink(activeMatch.match_id)}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 transition"
+                >
+                  Chia sẻ link
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -771,6 +825,29 @@ const handleRiotLogin = () => {
           />
         </aside>
       </main>
+
+      <FriendsLeaderboard
+        isOpen={showLeaderboard}
+        initialGame={activeGameTab}
+        currentUserId={profile?.id}
+        onClose={() => setShowLeaderboard(false)}
+      />
+
+      <SettingsVaultModal
+        isOpen={showSettingsVault}
+        initialGame={activeGameTab}
+        onClose={() => setShowSettingsVault(false)}
+      />
+
+      <PostMatchRecapToast
+        isOpen={showPostMatchRecap}
+        gameType={activeGameTab}
+        mapName={activeMatch?.map_name || ''}
+        matchResult={activeMatch?.match_result || ''}
+        scoreSummary={activeMatch?.score_summary}
+        report={report}
+        onClose={() => setShowPostMatchRecap(false)}
+      />
 
       <UpdateBanner />
     </div>
