@@ -40,9 +40,9 @@ export interface SquadInfo {
 export function getCaptureMode(): CaptureMode {
   try {
     const val = localStorage.getItem(CAPTURE_MODE_KEY);
-    return val === 'HIGHLIGHT_CLIPS' ? 'HIGHLIGHT_CLIPS' : 'FULL_MATCH';
+    return val === 'FULL_MATCH' ? 'FULL_MATCH' : 'HIGHLIGHT_CLIPS';
   } catch {
-    return 'FULL_MATCH';
+    return 'HIGHLIGHT_CLIPS';
   }
 }
 

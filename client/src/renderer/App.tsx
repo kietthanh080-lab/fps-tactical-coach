@@ -183,6 +183,8 @@ const App: React.FC = () => {
   const [showTrendModal, setShowTrendModal] = useState(false);
 
   const [captureMode, setCaptureModeState] = useState<CaptureMode>(() => getCaptureMode());
+  const [isElectronRuntime, setIsElectronRuntime] = useState(false);
+  const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [pubgIgnInput, setPubgIgnInput] = useState('');
   const [savingPubgIgn, setSavingPubgIgn] = useState(false);
   const [unlinkingRiot, setUnlinkingRiot] = useState(false);
@@ -247,6 +249,24 @@ const App: React.FC = () => {
       applyAuthenticatedToken(receivedToken);
     });
   }, [applyAuthenticatedToken]);
+
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.getBackgroundPrefs) return;
+    setIsElectronRuntime(true);
+    void electronAPI
+      .getBackgroundPrefs()
+      .then((prefs: { autoStart?: boolean }) => {
+        setAutoStartEnabled(Boolean(prefs?.autoStart));
+      })
+      .catch(() => {});
+
+    if (electronAPI.onBackgroundPrefsChanged) {
+      return electronAPI.onBackgroundPrefsChanged((prefs: { autoStart?: boolean }) => {
+        setAutoStartEnabled(Boolean(prefs?.autoStart));
+      });
+    }
+  }, []);
 
   const resetSelection = useCallback(() => {
     setSelectedMatchId(null);
@@ -567,6 +587,24 @@ const App: React.FC = () => {
         ? 'Đã chuyển sang chế độ Highlight (~23s quanh mỗi mạng hạ gục, tiết kiệm dung lượng ổ cứng khi chạy Overwolf).'
         : 'Đã chuyển sang chế độ Quay cả trận (Full Match Replay khi chạy Overwolf).'
     );
+  };
+
+  const handleToggleAutoStart = async () => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.setAutoStart) return;
+    const nextVal = !autoStartEnabled;
+    try {
+      const res = await electronAPI.setAutoStart(nextVal);
+      const confirmed = Boolean(res?.autoStart);
+      setAutoStartEnabled(confirmed);
+      setStatusMsg(
+        confirmed
+          ? 'Đã bật tự động chạy ngầm cùng Windows ở khay hệ thống (System Tray).'
+          : 'Đã tắt tự động khởi động cùng Windows.'
+      );
+    } catch {
+      setStatusMsg('Không thể thay đổi thiết lập khởi động cùng Windows.');
+    }
   };
 
   const handleSavePubgIgn = async (e: React.FormEvent) => {
@@ -1125,17 +1163,25 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Trang thai Overwolf Auto-Capture & che do quay */}
+          {/* Trang thai Overwolf Auto-Capture, chay ngam System Tray & che do quay */}
           <div className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <span
                 className={`inline-flex items-center gap-1.5 font-mono text-[11px] font-bold ${
-                  isOverwolfRuntime ? 'text-[#10B981]' : 'text-[#94A3B8]'
+                  isOverwolfRuntime
+                    ? 'text-[#10B981]'
+                    : isElectronRuntime
+                      ? 'text-[#38BDF8]'
+                      : 'text-[#94A3B8]'
                 }`}
               >
                 <Record size={12} weight="fill" aria-hidden="true" />
                 <span>
-                  {isOverwolfRuntime ? 'Overwolf Auto-Capture' : 'Desktop Replay'}
+                  {isOverwolfRuntime
+                    ? 'Overwolf Auto-Capture'
+                    : isElectronRuntime
+                      ? 'Desktop Tray (Chạy ngầm)'
+                      : 'Web Replay'}
                 </span>
               </span>
               <span className="font-mono text-[10px] text-[#64748B]">
@@ -1173,6 +1219,31 @@ const App: React.FC = () => {
                 Highlight ~23s
               </button>
             </div>
+
+            {isElectronRuntime && !isOverwolfRuntime && (
+              <div className="pt-1 border-t border-[#232B3B]/80 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-[#94A3B8]">
+                    Chạy ngầm cùng Windows
+                  </span>
+                  <button
+                    type="button"
+                    aria-pressed={autoStartEnabled}
+                    onClick={() => void handleToggleAutoStart()}
+                    className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border transition duration-150 ${
+                      autoStartEnabled
+                        ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
+                        : 'bg-[#171D28] border-[#232B3B] text-[#64748B] hover:text-[#94A3B8]'
+                    }`}
+                  >
+                    {autoStartEnabled ? 'ĐANG BẬT' : 'ĐANG TẮT'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-[#64748B] leading-relaxed">
+                  Đóng cửa sổ sẽ thu nhỏ xuống khay hệ thống. Để tự động quay mỗi mạng Kill lúc đang bắn, chạy kèm gói Overwolf (.opk).
+                </p>
+              </div>
+            )}
           </div>
 
           {!isValo && (

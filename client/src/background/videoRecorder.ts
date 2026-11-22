@@ -16,7 +16,7 @@ class VideoRecorderService {
   private isRecording = false;
   private startTimeMs = 0;
   private activeStreamId: number | null = null;
-  private activeMode: CaptureMode = 'FULL_MATCH';
+  private activeMode: CaptureMode = 'HIGHLIGHT_CLIPS';
   private isCapturingHighlight = false;
   private latestClipPath = '';
   private latestClipUrl = '';
