@@ -7,6 +7,7 @@ const {
   Menu,
   nativeImage,
   Notification,
+  screen,
   shell,
   Tray,
 } = require('electron');
@@ -45,8 +46,32 @@ const runtimeCaptureState = {
   overwolfInstallPath: null,
   overwolfRunning: false,
   desktopCaptureEnabled: true,
+  captureCompatMode: 'wgc', // 'wgc' | 'dxgi'
+  captureQuality: '720p30', // '720p30' | '1080p60'
+  preferredScreenId: null,
   hotkeyRegistered: false,
 };
+
+function readInitialPrefsSyncForSwitches() {
+  try {
+    const raw = fs.readFileSync(path.join(app.getPath('userData'), 'background-prefs.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed?.captureCompatMode === 'dxgi') {
+      runtimeCaptureState.captureCompatMode = 'dxgi';
+      app.commandLine.appendSwitch('disable-features', 'AllowWgcScreenCapturer');
+    }
+    if (parsed?.captureQuality === '1080p60') {
+      runtimeCaptureState.captureQuality = '1080p60';
+    }
+    if (typeof parsed?.preferredScreenId === 'string' && parsed.preferredScreenId) {
+      runtimeCaptureState.preferredScreenId = parsed.preferredScreenId;
+    }
+  } catch {
+    // Su dung mac dinh WGC + 720p30 neu chua co file cau hinh
+  }
+}
+
+readInitialPrefsSyncForSwitches();
 
 function getAppIconPath() {
   const distIcon = path.join(__dirname, '../dist/launcher_icon.ico');
@@ -236,6 +261,9 @@ function getCapturePayload() {
     overwolfInstallPath: runtimeCaptureState.overwolfInstallPath,
     overwolfRunning: runtimeCaptureState.overwolfRunning,
     desktopCaptureEnabled: runtimeCaptureState.desktopCaptureEnabled,
+    captureCompatMode: runtimeCaptureState.captureCompatMode,
+    captureQuality: runtimeCaptureState.captureQuality,
+    preferredScreenId: runtimeCaptureState.preferredScreenId,
     hotkeyRegistered: runtimeCaptureState.hotkeyRegistered,
     hotkey: HOTKEY_HIGHLIGHT,
     shouldRecord: Boolean(
@@ -597,12 +625,70 @@ ipcMain.handle('capture:set-desktop-capture', (_event, enabled) => {
   return { desktopCaptureEnabled: next, status: getCapturePayload() };
 });
 
-ipcMain.handle('capture:get-screen-source', async () => {
+ipcMain.handle('capture:list-screens', async () => {
+  const primaryId = String(screen.getPrimaryDisplay()?.id || '');
   const sources = await desktopCapturer.getSources({
     types: ['screen'],
     thumbnailSize: { width: 0, height: 0 },
   });
-  return sources[0] ? { id: sources[0].id, name: sources[0].name } : null;
+  return sources.map((s, idx) => ({
+    id: s.id,
+    name: s.name || `Màn hình ${idx + 1}`,
+    displayId: String(s.display_id || ''),
+    isPrimary: Boolean(primaryId && String(s.display_id || '') === primaryId),
+  }));
+});
+
+ipcMain.handle('capture:set-capture-options', (_event, payload) => {
+  const prevCompat = runtimeCaptureState.captureCompatMode;
+  const nextCompat = payload?.captureCompatMode === 'dxgi' ? 'dxgi' : 'wgc';
+  const nextQuality = payload?.captureQuality === '1080p60' ? '1080p60' : '720p30';
+  const nextScreenId =
+    payload?.preferredScreenId === null
+      ? null
+      : typeof payload?.preferredScreenId === 'string' && payload.preferredScreenId.trim()
+        ? payload.preferredScreenId.trim()
+        : runtimeCaptureState.preferredScreenId;
+
+  runtimeCaptureState.captureCompatMode = nextCompat;
+  runtimeCaptureState.captureQuality = nextQuality;
+  runtimeCaptureState.preferredScreenId = nextScreenId;
+
+  writeBackgroundPrefs({
+    captureCompatMode: nextCompat,
+    captureQuality: nextQuality,
+    preferredScreenId: nextScreenId,
+  });
+
+  broadcastCaptureState();
+  return {
+    requiresRestart: prevCompat !== nextCompat,
+    status: getCapturePayload(),
+  };
+});
+
+ipcMain.handle('capture:relaunch-app', () => {
+  isQuitting = true;
+  app.relaunch();
+  app.exit(0);
+});
+
+ipcMain.handle('capture:get-screen-source', async () => {
+  const primaryId = String(screen.getPrimaryDisplay()?.id || '');
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: 0, height: 0 },
+  });
+  if (sources.length === 0) return null;
+
+  const preferred =
+    runtimeCaptureState.preferredScreenId &&
+    sources.find((s) => s.id === runtimeCaptureState.preferredScreenId);
+  const primary =
+    primaryId && sources.find((s) => String(s.display_id || '') === primaryId);
+  const chosen = preferred || primary || sources[0];
+
+  return { id: chosen.id, name: chosen.name };
 });
 
 ipcMain.handle('capture:save-temp-segment', (_event, payload) => {

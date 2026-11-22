@@ -46,6 +46,7 @@ import {
   DesktopCaptureStatus,
   desktopRingRecorder,
   matchDesktopHighlightsForMatches,
+  ScreenSourceItem,
 } from './services/desktopCapture';
 import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
@@ -193,6 +194,10 @@ const App: React.FC = () => {
   const [desktopCaptureStatus, setDesktopCaptureStatus] = useState<DesktopCaptureStatus | null>(
     null
   );
+  const [screenSources, setScreenSources] = useState<ScreenSourceItem[]>([]);
+  const [compatNeedsRestart, setCompatNeedsRestart] = useState(false);
+  const [testingCapture, setTestingCapture] = useState(false);
+  const [blackFrameAlert, setBlackFrameAlert] = useState(false);
   const [checkingOverwolf, setCheckingOverwolf] = useState(false);
   const [pubgIgnInput, setPubgIgnInput] = useState('');
   const [savingPubgIgn, setSavingPubgIgn] = useState(false);
@@ -289,10 +294,20 @@ const App: React.FC = () => {
         .catch(() => {});
     }
 
+    if (electronAPI.listScreens) {
+      void electronAPI
+        .listScreens()
+        .then((list: ScreenSourceItem[]) => {
+          if (Array.isArray(list)) setScreenSources(list);
+        })
+        .catch(() => {});
+    }
+
     if (electronAPI.onCaptureStateChanged) {
       cleanups.push(
         electronAPI.onCaptureStateChanged((status: DesktopCaptureStatus) => {
           setDesktopCaptureStatus(status);
+          if (status.shouldRecord) setBlackFrameAlert(false);
           void desktopRingRecorder.ensureState(status);
         })
       );
@@ -301,6 +316,13 @@ const App: React.FC = () => {
     desktopRingRecorder.setOnF9Saved((clip) => {
       setStatusMsg(
         `Đã cắt Highlight (F9): ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
+      );
+    });
+
+    desktopRingRecorder.setOnBlackScreen(() => {
+      setBlackFrameAlert(true);
+      setStatusMsg(
+        'Cảnh báo: Khung hình quay bị đen do game độc chiếm Exclusive Fullscreen hoặc lệch card đồ họa. Hãy thử chuyển sang chế độ DXGI Classic ở sidebar.'
       );
     });
 
@@ -314,6 +336,7 @@ const App: React.FC = () => {
 
     return () => {
       desktopRingRecorder.setOnF9Saved(null);
+      desktopRingRecorder.setOnBlackScreen(null);
       void desktopRingRecorder.stop();
       for (const fn of cleanups) fn();
     };
@@ -724,6 +747,59 @@ const App: React.FC = () => {
       void electronAPI.openOverwolfDownload();
     } else {
       window.open('https://www.overwolf.com/', '_blank', 'noreferrer');
+    }
+  };
+
+  const handleUpdateCaptureOptions = async (next: {
+    captureCompatMode?: 'wgc' | 'dxgi';
+    captureQuality?: '720p30' | '1080p60';
+    preferredScreenId?: string | null;
+  }) => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.setCaptureOptions) return;
+    try {
+      const res = await electronAPI.setCaptureOptions(next);
+      if (res?.status) {
+        setDesktopCaptureStatus(res.status);
+        await desktopRingRecorder.ensureState(res.status);
+      }
+      if (res?.requiresRestart) {
+        setCompatNeedsRestart(true);
+        setStatusMsg(
+          'Đã đổi bộ bắt hình (WGC / DXGI). Bấm "Khởi động lại app" ở cột trái để áp dụng ngay.'
+        );
+      } else if (next.captureQuality) {
+        setStatusMsg(
+          next.captureQuality === '720p30'
+            ? 'Đã chọn chất lượng 720p 30fps (tối ưu giữ nguyên FPS khi bắn Fullscreen).'
+            : 'Đã chọn chất lượng 1080p 60fps.'
+        );
+      }
+    } catch {
+      setStatusMsg('Không thể cập nhật tùy chọn quay màn hình.');
+    }
+  };
+
+  const handleTestCaptureFrame = async () => {
+    setTestingCapture(true);
+    setStatusMsg(null);
+    try {
+      const res = await desktopRingRecorder.testCaptureHealth();
+      if (!res.ok) {
+        setBlackFrameAlert(res.isBlack);
+        setStatusMsg(
+          res.isBlack
+            ? 'Khung hình kiểm tra bị ĐEN. Thử chuyển sang DXGI Fullscreen (rồi khởi động lại app) hoặc giữ Windows Fullscreen Optimizations / Windowed Fullscreen.'
+            : 'Không lấy được luồng màn hình. Kiểm tra quyền quay màn hình Windows.'
+        );
+      } else {
+        setBlackFrameAlert(false);
+        setStatusMsg(
+          `Kiểm tra OK (${res.width}x${res.height}): Đang bắt được hình ảnh rõ nét!`
+        );
+      }
+    } finally {
+      setTestingCapture(false);
     }
   };
 
@@ -1398,15 +1474,137 @@ const App: React.FC = () => {
                   </button>
                 </div>
 
+                <div className="space-y-1.5 pt-1 border-t border-[#232B3B]/60">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono text-[#94A3B8]">
+                      Chất lượng (FPS)
+                    </span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUpdateCaptureOptions({ captureQuality: '720p30' })
+                        }
+                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
+                          (desktopCaptureStatus?.captureQuality || '720p30') === '720p30'
+                            ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981] font-bold'
+                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
+                        }`}
+                      >
+                        720p30 (Nhẹ)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUpdateCaptureOptions({ captureQuality: '1080p60' })
+                        }
+                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
+                          desktopCaptureStatus?.captureQuality === '1080p60'
+                            ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8] font-bold'
+                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
+                        }`}
+                      >
+                        1080p60
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono text-[#94A3B8]">
+                      Engine Fullscreen
+                    </span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUpdateCaptureOptions({ captureCompatMode: 'wgc' })
+                        }
+                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
+                          (desktopCaptureStatus?.captureCompatMode || 'wgc') === 'wgc'
+                            ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8] font-bold'
+                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
+                        }`}
+                      >
+                        WGC
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUpdateCaptureOptions({ captureCompatMode: 'dxgi' })
+                        }
+                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
+                          desktopCaptureStatus?.captureCompatMode === 'dxgi'
+                            ? 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23] font-bold'
+                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
+                        }`}
+                      >
+                        DXGI Classic
+                      </button>
+                    </div>
+                  </div>
+
+                  {compatNeedsRestart && (
+                    <button
+                      type="button"
+                      onClick={() => void (window as any).electronAPI?.relaunchApp?.()}
+                      className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
+                    >
+                      Khởi động lại app để áp dụng Engine mới
+                    </button>
+                  )}
+
+                  {screenSources.length > 1 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <label
+                        htmlFor="capture-screen-select"
+                        className="text-[10px] font-mono text-[#94A3B8] shrink-0"
+                      >
+                        Màn hình
+                      </label>
+                      <select
+                        id="capture-screen-select"
+                        value={desktopCaptureStatus?.preferredScreenId || ''}
+                        onChange={(e) =>
+                          void handleUpdateCaptureOptions({
+                            preferredScreenId: e.target.value || null,
+                          })
+                        }
+                        className="flex-1 min-w-0 px-1.5 py-0.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] text-[10px] font-mono text-[#EEF2F6]"
+                      >
+                        <option value="">Mặc định (Màn chính)</option>
+                        {screenSources.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} {s.isPrimary ? '(Chính)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => void desktopRingRecorder.triggerF9Highlight(activeGameTab)}
                     className="flex-1 py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-[10px] font-mono font-bold text-[#E59A23] transition duration-150"
                   >
-                    Cắt Highlight ngay (F9)
+                    Cắt ngay (F9)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={testingCapture}
+                    onClick={() => void handleTestCaptureFrame()}
+                    className="py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#38BDF8]/40 text-[10px] font-mono font-bold text-[#38BDF8] disabled:opacity-50 transition duration-150"
+                  >
+                    {testingCapture ? 'Đang thử...' : 'Test quay'}
                   </button>
                 </div>
+
+                {blackFrameAlert && (
+                  <p className="p-2 rounded-[2px] bg-[#F43F5E]/10 border border-[#F43F5E]/30 text-[10px] text-[#F43F5E] leading-relaxed">
+                    Phát hiện khung hình đen (Exclusive Fullscreen chặn DWM). Hãy thử bật <b>DXGI Classic</b> rồi khởi động lại app, giữ bật Windows Fullscreen Optimizations hoặc chuyển sang Windowed Fullscreen trong game.
+                  </p>
+                )}
 
                 <div className="pt-1 border-t border-[#232B3B]/60 flex items-center justify-between gap-1.5">
                   <span className="text-[10px] text-[#64748B]">
@@ -1443,7 +1641,7 @@ const App: React.FC = () => {
                 </div>
 
                 <p className="text-[10px] text-[#64748B] leading-relaxed">
-                  Tự lưu clip theo mốc Kill sau trận &amp; phím F9 (chọn Windowed Fullscreen trong game để ghi hình rõ nhất).
+                  Mặc định quay 720p30 giữ nguyên FPS tối đa cho Fullscreen (Win 10/11). Dùng nút Test quay để kiểm tra trực tiếp.
                 </p>
               </div>
             )}
