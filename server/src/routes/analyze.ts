@@ -991,7 +991,10 @@ THÔNG TIN TRẬN ĐẤU:
           contents: conversationContents,
           generationConfig: {
             temperature: 0.4,
-            maxOutputTokens: 600,
+            maxOutputTokens: 1200,
+            thinkingConfig: {
+              thinkingBudget: 0,
+            },
           },
         }),
       }

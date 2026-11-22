@@ -275,21 +275,40 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSteamLogin = () => {
-    const isDesktopApp = window.location.protocol === 'file:';
-    const returnTo = isDesktopApp
-      ? 'electron'
-      : encodeURIComponent(window.location.href.split('?')[0]);
-    window.location.href = `${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`;
-  };
+useEffect(() => {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.onAuthToken) return;
+  return electronAPI.onAuthToken((receivedToken: string) => {
+    setAuthToken(receivedToken);
+    setTokenState(receivedToken);
+  });
+}, []);
 
-  const handleRiotLogin = () => {
-    const isDesktopApp = window.location.protocol === 'file:';
-    const returnTo = isDesktopApp
-      ? 'electron'
-      : encodeURIComponent(window.location.href.split('?')[0]);
-    window.location.href = `${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`;
-  };
+const openAuthUrl = (authUrl: string) => {
+  const electronAPI = (window as any).electronAPI;
+  if (electronAPI?.openExternal) {
+    void electronAPI.openExternal(authUrl);
+    setStatusMsg('Đã mở trang đăng nhập trên trình duyệt. Vui lòng hoàn tất đăng nhập để quay lại ứng dụng.');
+  } else {
+    window.location.href = authUrl;
+  }
+};
+
+const handleSteamLogin = () => {
+  const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
+  const returnTo = isDesktopApp
+    ? 'electron'
+    : encodeURIComponent(window.location.href.split('?')[0]);
+  openAuthUrl(`${API_BASE_URL}/auth/steam/login?returnTo=${returnTo}`);
+};
+
+const handleRiotLogin = () => {
+  const isDesktopApp = window.location.protocol === 'file:' || Boolean((window as any).electronAPI);
+  const returnTo = isDesktopApp
+    ? 'electron'
+    : encodeURIComponent(window.location.href.split('?')[0]);
+  openAuthUrl(`${API_BASE_URL}/auth/riot/login?returnTo=${returnTo}`);
+};
 
   const handleSyncPubg = async () => {
     setSyncingPubg(true);

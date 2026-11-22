@@ -1,10 +1,49 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
 autoUpdater.autoDownload = false; // Chờ người dùng bấm nút mới tải
 
+// Đăng ký giao thức deep-link tacticalreplay:// trên Windows
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('tacticalreplay', process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('tacticalreplay');
+}
+
 let mainWindow = null;
+
+function extractTokenFromArgs(argv) {
+  const deepLinkUrl = argv.find((arg) => typeof arg === 'string' && arg.startsWith('tacticalreplay://'));
+  if (!deepLinkUrl) return null;
+  try {
+    const parsed = new URL(deepLinkUrl);
+    return parsed.searchParams.get('token');
+  } catch {
+    return null;
+  }
+}
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, commandLine) => {
+    const token = extractTokenFromArgs(commandLine);
+    if (token && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('auth:token-received', token);
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
 
 function setupAutoUpdater() {
   autoUpdater.on('update-available', (info) => {
@@ -55,6 +94,12 @@ ipcMain.handle('install-update-now', () => {
   autoUpdater.quitAndInstall();
 });
 
+ipcMain.handle('shell:open-external', async (_event, url) => {
+  if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+    await shell.openExternal(url);
+  }
+});
+
 function createMainWindow() {
   const indexHtmlPath = path.join(__dirname, '../dist/public/index.html');
 
@@ -75,9 +120,21 @@ function createMainWindow() {
   });
 
   mainWindow = win;
-  win.loadFile(indexHtmlPath);
 
-  // Tự động bắt token sau khi đăng nhập Steam / Riot và quay về giao diện chính
+  const initialToken = extractTokenFromArgs(process.argv);
+  if (initialToken) {
+    win.loadFile(indexHtmlPath, { query: { token: initialToken } });
+  } else {
+    win.loadFile(indexHtmlPath);
+  }
+
+  // Chống treo màn hình đen nếu trang web ngoài bị chặn hoặc mất mạng
+  win.webContents.on('did-fail-load', (_event, errorCode) => {
+    if (errorCode === -3) return; // Bỏ qua lỗi hủy chuyển hướng chủ động (ERR_ABORTED)
+    win.loadFile(indexHtmlPath);
+  });
+
+  // Dự phòng trường hợp điều hướng nội bộ tới desktop-callback
   win.webContents.on('did-navigate', (_event, url) => {
     if (url.includes('/api/auth/desktop-callback')) {
       try {

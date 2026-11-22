@@ -27,10 +27,24 @@ function isSafeRedirectTarget(target: string): boolean {
   );
 }
 
-router.get('/desktop-callback', (_req: Request, res: Response) => {
-  res.send(
-    '<body style="background:#020617;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><h3>Đăng nhập thành công! Đang quay lại TacticalReplayAI...</h3></body>'
-  );
+router.get('/desktop-callback', (req: Request, res: Response) => {
+  const token = String(req.query.token || '');
+  const deepLink = `tacticalreplay://auth?token=${encodeURIComponent(token)}`;
+
+  res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head><meta charset="UTF-8" /><title>Đăng nhập thành công</title></head>
+<body style="background:#020617;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;max-width:420px;padding:32px;background:#0f172a;border:1px solid #1e293b;border-radius:16px;">
+    <h2 style="margin-top:0;">Đăng nhập thành công!</h2>
+    <p style="color:#94a3b8;font-size:14px;">Đang chuyển hướng về ứng dụng <b>TacticalReplayAI</b>...</p>
+    <a href="${deepLink}" style="display:inline-block;margin-top:16px;padding:12px 24px;background:#10b981;color:#020617;font-weight:bold;border-radius:10px;text-decoration:none;">
+      Mở lại TacticalReplayAI
+    </a>
+  </div>
+  <script>window.location.href = ${JSON.stringify(deepLink)};</script>
+</body>
+</html>`);
 });
 
 export function authenticateToken(req: AuthRequest, res: Response, next: NextFunction): void {

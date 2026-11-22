@@ -530,7 +530,15 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                           : 'bg-slate-950 border border-slate-800 text-slate-200 mr-2'
                       }`}
                     >
-                      {m.content}
+                      {m.content.split(/(\*\*.*?\*\*)/g).map((part, i) =>
+                        part.startsWith('**') && part.endsWith('**') ? (
+                          <strong key={i} className="font-bold text-white">
+                            {part.slice(2, -2)}
+                          </strong>
+                        ) : (
+                          <span key={i}>{part}</span>
+                        )
+                      )}
                     </div>
                   ))
                 )}

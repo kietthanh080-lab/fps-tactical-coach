@@ -10,3 +10,12 @@ contextBridge.exposeInMainWorld('electronUpdater', {
     return () => ipcRenderer.removeListener('update-status', listener);
   },
 });
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
+  onAuthToken: (callback) => {
+    const listener = (_event, token) => callback(token);
+    ipcRenderer.on('auth:token-received', listener);
+    return () => ipcRenderer.removeListener('auth:token-received', listener);
+  },
+});
