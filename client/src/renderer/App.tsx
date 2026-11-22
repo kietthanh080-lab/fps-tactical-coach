@@ -42,6 +42,11 @@ import {
   unlinkRiotAccount,
   updatePubgProfile,
 } from './services/localDb';
+import {
+  DesktopCaptureStatus,
+  desktopRingRecorder,
+  matchDesktopHighlightsForMatches,
+} from './services/desktopCapture';
 import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
 import { MatchReportUI, TacticalReport } from './components/TacticalReport';
@@ -185,6 +190,10 @@ const App: React.FC = () => {
   const [captureMode, setCaptureModeState] = useState<CaptureMode>(() => getCaptureMode());
   const [isElectronRuntime, setIsElectronRuntime] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
+  const [desktopCaptureStatus, setDesktopCaptureStatus] = useState<DesktopCaptureStatus | null>(
+    null
+  );
+  const [checkingOverwolf, setCheckingOverwolf] = useState(false);
   const [pubgIgnInput, setPubgIgnInput] = useState('');
   const [savingPubgIgn, setSavingPubgIgn] = useState(false);
   const [unlinkingRiot, setUnlinkingRiot] = useState(false);
@@ -261,11 +270,53 @@ const App: React.FC = () => {
       })
       .catch(() => {});
 
+    const cleanups: Array<() => void> = [];
     if (electronAPI.onBackgroundPrefsChanged) {
-      return electronAPI.onBackgroundPrefsChanged((prefs: { autoStart?: boolean }) => {
-        setAutoStartEnabled(Boolean(prefs?.autoStart));
-      });
+      cleanups.push(
+        electronAPI.onBackgroundPrefsChanged((prefs: { autoStart?: boolean }) => {
+          setAutoStartEnabled(Boolean(prefs?.autoStart));
+        })
+      );
     }
+
+    if (electronAPI.getCaptureStatus) {
+      void electronAPI
+        .getCaptureStatus()
+        .then((status: DesktopCaptureStatus) => {
+          setDesktopCaptureStatus(status);
+          void desktopRingRecorder.ensureState(status);
+        })
+        .catch(() => {});
+    }
+
+    if (electronAPI.onCaptureStateChanged) {
+      cleanups.push(
+        electronAPI.onCaptureStateChanged((status: DesktopCaptureStatus) => {
+          setDesktopCaptureStatus(status);
+          void desktopRingRecorder.ensureState(status);
+        })
+      );
+    }
+
+    desktopRingRecorder.setOnF9Saved((clip) => {
+      setStatusMsg(
+        `Đã cắt Highlight (F9): ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
+      );
+    });
+
+    if (electronAPI.onHotkeyHighlight) {
+      cleanups.push(
+        electronAPI.onHotkeyHighlight(() => {
+          void desktopRingRecorder.triggerF9Highlight(activeGameTabRef.current);
+        })
+      );
+    }
+
+    return () => {
+      desktopRingRecorder.setOnF9Saved(null);
+      void desktopRingRecorder.stop();
+      for (const fn of cleanups) fn();
+    };
   }, []);
 
   const resetSelection = useCallback(() => {
@@ -328,8 +379,20 @@ const App: React.FC = () => {
         }
 
         const tabMatches = loadedVideos.filter((v) => v.game_type === targetTab);
+        const newlyMatchedIds = await matchDesktopHighlightsForMatches(tabMatches).catch(
+          () => [] as string[]
+        );
+        if (newlyMatchedIds.length > 0) {
+          setVideos((prev) => [...prev]);
+        }
+
         if (tabMatches.length > 0) {
           await handleSelectMatch(tabMatches[0]);
+          if (newlyMatchedIds.length > 0) {
+            setStatusMsg(
+              `Đã tự động cắt và gắn clip Highlight cho ${newlyMatchedIds.length} trận vừa xong.`
+            );
+          }
         } else {
           resetSelection();
         }
@@ -378,12 +441,24 @@ const App: React.FC = () => {
           (currentList.length === 0 || latestList[0].match_id !== currentList[0].match_id);
 
         if (hasNewTopMatch) {
-          setVideos(latestList);
           const tabMatches = latestList.filter((v) => v.game_type === activeGameTab);
+          await matchDesktopHighlightsForMatches(tabMatches).catch(() => []);
+          setVideos(latestList);
           if (tabMatches.length > 0) {
             setStatusMsg('Phát hiện trận đấu mới, đã tự động cập nhật danh sách 20 trận gần nhất.');
             await handleSelectMatch(tabMatches[0]);
             setShowPostMatchRecap(true);
+          }
+        } else if (latestList.length > 0) {
+          const tabMatches = latestList.filter((v) => v.game_type === activeGameTab);
+          const matchedIds = await matchDesktopHighlightsForMatches(tabMatches).catch(
+            () => [] as string[]
+          );
+          if (matchedIds.length > 0) {
+            setVideos([...latestList]);
+            if (tabMatches[0] && matchedIds.includes(tabMatches[0].match_id)) {
+              await handleSelectMatch(tabMatches[0]);
+            }
           }
         }
       } catch {
@@ -604,6 +679,51 @@ const App: React.FC = () => {
       );
     } catch {
       setStatusMsg('Không thể thay đổi thiết lập khởi động cùng Windows.');
+    }
+  };
+
+  const handleToggleDesktopCapture = async () => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.setDesktopCaptureEnabled) return;
+    const nextVal = !(desktopCaptureStatus?.desktopCaptureEnabled ?? true);
+    try {
+      const res = await electronAPI.setDesktopCaptureEnabled(nextVal);
+      if (res?.status) {
+        setDesktopCaptureStatus(res.status);
+        await desktopRingRecorder.ensureState(res.status);
+      }
+      setStatusMsg(
+        nextVal
+          ? 'Đã bật Tự quay Highlight ngầm (.exe) khi vào VALORANT hoặc PUBG.'
+          : 'Đã tạm tắt Tự quay Highlight trong .exe.'
+      );
+    } catch {
+      setStatusMsg('Không thể thay đổi trạng thái quay Highlight.');
+    }
+  };
+
+  const handleCheckOverwolf = async () => {
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.checkOverwolfInstalled) return;
+    setCheckingOverwolf(true);
+    try {
+      const res = await electronAPI.checkOverwolfInstalled();
+      setStatusMsg(
+        res?.installed
+          ? 'Đã phát hiện Overwolf trên máy! Bạn có thể dùng Overwolf để bắt kill trực tiếp.'
+          : 'Chưa phát hiện Overwolf. Ứng dụng đang dùng bộ quay Desktop Auto-Clip + F9 tích hợp sẵn.'
+      );
+    } finally {
+      setCheckingOverwolf(false);
+    }
+  };
+
+  const handleOpenOverwolfDownload = () => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.openOverwolfDownload) {
+      void electronAPI.openOverwolfDownload();
+    } else {
+      window.open('https://www.overwolf.com/', '_blank', 'noreferrer');
     }
   };
 
@@ -1221,7 +1341,45 @@ const App: React.FC = () => {
             </div>
 
             {isElectronRuntime && !isOverwolfRuntime && (
-              <div className="pt-1 border-t border-[#232B3B]/80 space-y-1.5">
+              <div className="pt-1.5 border-t border-[#232B3B]/80 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] font-bold text-[#94A3B8]">
+                    {desktopCaptureStatus?.shouldRecord
+                      ? `ĐANG QUAY ${desktopCaptureStatus.activeGame} (25s/đoạn)`
+                      : desktopCaptureStatus?.overwolfRunning
+                        ? 'Overwolf đang chạy (ưu tiên Overwolf)'
+                        : desktopCaptureStatus?.desktopCaptureEnabled
+                          ? 'Đang chờ vào VALORANT / PUBG'
+                          : 'Tự quay Highlight (.exe) đang tắt'}
+                  </span>
+                  <span
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      desktopCaptureStatus?.shouldRecord
+                        ? 'bg-[#10B981] animate-pulse'
+                        : 'bg-[#38BDF8]'
+                    }`}
+                    aria-hidden="true"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-[#94A3B8]">
+                    Tự quay ngầm (.exe + F9)
+                  </span>
+                  <button
+                    type="button"
+                    aria-pressed={desktopCaptureStatus?.desktopCaptureEnabled ?? true}
+                    onClick={() => void handleToggleDesktopCapture()}
+                    className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border transition duration-150 ${
+                      desktopCaptureStatus?.desktopCaptureEnabled ?? true
+                        ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
+                        : 'bg-[#171D28] border-[#232B3B] text-[#64748B] hover:text-[#94A3B8]'
+                    }`}
+                  >
+                    {desktopCaptureStatus?.desktopCaptureEnabled ?? true ? 'ĐANG BẬT' : 'ĐANG TẮT'}
+                  </button>
+                </div>
+
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-[#94A3B8]">
                     Chạy ngầm cùng Windows
@@ -1239,8 +1397,53 @@ const App: React.FC = () => {
                     {autoStartEnabled ? 'ĐANG BẬT' : 'ĐANG TẮT'}
                   </button>
                 </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void desktopRingRecorder.triggerF9Highlight(activeGameTab)}
+                    className="flex-1 py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-[10px] font-mono font-bold text-[#E59A23] transition duration-150"
+                  >
+                    Cắt Highlight ngay (F9)
+                  </button>
+                </div>
+
+                <div className="pt-1 border-t border-[#232B3B]/60 flex items-center justify-between gap-1.5">
+                  <span className="text-[10px] text-[#64748B]">
+                    Overwolf:{' '}
+                    <b
+                      className={
+                        desktopCaptureStatus?.overwolfInstalled
+                          ? 'text-[#10B981]'
+                          : 'text-[#E59A23]'
+                      }
+                    >
+                      {desktopCaptureStatus?.overwolfInstalled ? 'Đã cài' : 'Chưa cài'}
+                    </b>
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {!desktopCaptureStatus?.overwolfInstalled && (
+                      <button
+                        type="button"
+                        onClick={handleOpenOverwolfDownload}
+                        className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#38BDF8]/40 text-[10px] font-mono font-bold text-[#38BDF8]"
+                      >
+                        Tải Overwolf
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={checkingOverwolf}
+                      onClick={() => void handleCheckOverwolf()}
+                      className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[10px] font-mono text-[#94A3B8] disabled:opacity-50"
+                    >
+                      {checkingOverwolf ? '...' : 'Kiểm tra'}
+                    </button>
+                  </div>
+                </div>
+
                 <p className="text-[10px] text-[#64748B] leading-relaxed">
-                  Đóng cửa sổ sẽ thu nhỏ xuống khay hệ thống. Để tự động quay mỗi mạng Kill lúc đang bắn, chạy kèm gói Overwolf (.opk).
+                  Tự lưu clip theo mốc Kill sau trận &amp; phím F9 (chọn Windowed Fullscreen trong game để ghi hình rõ nhất).
                 </p>
               </div>
             )}

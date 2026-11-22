@@ -292,8 +292,8 @@ const layout = (
       <p style="margin-bottom:6px;">
         ${
           isEn
-            ? 'TacticalReplayAI v1.4.1 - Free community post-match coaching & replay review.'
-            : 'TacticalReplayAI v1.4.1 - Nền tảng xem lại video và phân tích chiến thuật sau trận đấu dành cho cộng đồng VALORANT &amp; PUBG.'
+            ? 'TacticalReplayAI v1.5.0 - Free community post-match coaching & replay review.'
+            : 'TacticalReplayAI v1.5.0 - Nền tảng xem lại video và phân tích chiến thuật sau trận đấu dành cho cộng đồng VALORANT &amp; PUBG.'
         }
       </p>
       <p>TacticalReplayAI isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, VALORANT, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>

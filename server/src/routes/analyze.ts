@@ -249,11 +249,59 @@ function parseValorantMatchToRounds(
         ]
       : [];
 
-    const diedInRound = allKillsInRound.some((k: any) => k.victim === targetPuuid);
+    const diedKill = allKillsInRound.find((k: any) => k.victim === targetPuuid);
+    const diedInRound = Boolean(diedKill);
 
-    const roundEvents = localTimeline.filter((e) => e.round === roundNum);
-    const startMs = roundEvents[0]?.timestampMs ?? index * 90000;
-    const endMs = roundEvents[roundEvents.length - 1]?.timestampMs ?? startMs + 85000;
+    const apiEvents: TimelineEventInput[] = [];
+    if (localTimeline.length === 0) {
+      for (const k of myStats?.kills || []) {
+        if (typeof k.gameTime === 'number') {
+          apiEvents.push({
+            timestampMs: Math.max(0, k.gameTime),
+            round: roundNum,
+            type: 'KILL',
+            payload: { victim: k.victim },
+          });
+        }
+      }
+      if (diedKill && typeof diedKill.gameTime === 'number') {
+        apiEvents.push({
+          timestampMs: Math.max(0, diedKill.gameTime),
+          round: roundNum,
+          type: 'DEATH',
+          payload: { killer: diedKill.killer },
+        });
+      }
+      apiEvents.sort((a, b) => a.timestampMs - b.timestampMs);
+    }
+
+    const roundEvents =
+      localTimeline.length > 0
+        ? localTimeline.filter((e) => e.round === roundNum)
+        : apiEvents;
+
+    let fallbackStartMs = index * 90000;
+    const refKill = (myStats?.kills || []).find(
+      (k: any) => typeof k.gameTime === 'number' && typeof k.roundTime === 'number'
+    );
+    if (refKill) {
+      fallbackStartMs = Math.max(0, refKill.gameTime - refKill.roundTime);
+    } else if (
+      diedKill &&
+      typeof diedKill.gameTime === 'number' &&
+      typeof diedKill.roundTime === 'number'
+    ) {
+      fallbackStartMs = Math.max(0, diedKill.gameTime - diedKill.roundTime);
+    }
+
+    const startMs =
+      localTimeline.length > 0
+        ? roundEvents[0]?.timestampMs ?? fallbackStartMs
+        : fallbackStartMs;
+    const endMs =
+      roundEvents.length > 0
+        ? Math.max(startMs + 15000, roundEvents[roundEvents.length - 1].timestampMs + 5000)
+        : startMs + 85000;
 
     return {
       roundNumber: roundNum,

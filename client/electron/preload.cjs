@@ -25,4 +25,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('auth:token-received', listener);
     return () => ipcRenderer.removeListener('auth:token-received', listener);
   },
+  // Desktop Capture & Overwolf Detection APIs
+  getCaptureStatus: () => ipcRenderer.invoke('capture:get-status'),
+  checkOverwolfInstalled: () => ipcRenderer.invoke('capture:check-overwolf'),
+  openOverwolfDownload: () => ipcRenderer.invoke('capture:open-overwolf-download'),
+  setDesktopCaptureEnabled: (enabled) => ipcRenderer.invoke('capture:set-desktop-capture', enabled),
+  getScreenSourceId: () => ipcRenderer.invoke('capture:get-screen-source'),
+  saveTempSegment: (payload) => ipcRenderer.invoke('capture:save-temp-segment', payload),
+  promoteF9Highlight: (payload) => ipcRenderer.invoke('capture:promote-f9-highlight', payload),
+  matchKillSegments: (payload) => ipcRenderer.invoke('capture:match-kill-segments', payload),
+  onCaptureStateChanged: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('capture:state-changed', listener);
+    return () => ipcRenderer.removeListener('capture:state-changed', listener);
+  },
+  onHotkeyHighlight: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('capture:hotkey-highlight', listener);
+    return () => ipcRenderer.removeListener('capture:hotkey-highlight', listener);
+  },
 });
