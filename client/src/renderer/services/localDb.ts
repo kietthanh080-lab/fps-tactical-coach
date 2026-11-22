@@ -178,3 +178,32 @@ export async function uploadMatchHighlight(
 
   return response.json();
 }
+
+export async function quickLoginWithRiotId(riotId: string): Promise<{
+  token: string;
+  user: {
+    id: number;
+    riot_game_name: string;
+    riot_tag_line: string;
+  };
+}> {
+  const existingToken = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/auth/riot/quick-login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(existingToken ? { Authorization: `Bearer ${existingToken}` } : {}),
+    },
+    body: JSON.stringify({ riotId }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Đăng nhập bằng Riot ID thất bại.');
+  }
+
+  if (data.token) {
+    setAuthToken(data.token);
+  }
+  return data;
+}

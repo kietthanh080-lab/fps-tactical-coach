@@ -6,6 +6,7 @@ import {
   getAuthToken,
   getLocalVideoByMatchId,
   PlayerSearchResult,
+  quickLoginWithRiotId,
   searchPlayerProfile,
   setAuthToken,
   syncRealPubgMatches,
@@ -112,6 +113,10 @@ const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<PlayerSearchResult | null>(null);
+
+  // State đăng nhập / liên kết nhanh bằng Riot ID#Tag
+  const [quickRiotId, setQuickRiotId] = useState('');
+  const [loggingInRiot, setLoggingInRiot] = useState(false);
 
   // State cho Giai đoạn 3 & 4 (Bảng xếp hạng, Kho Sens/Crosshair, Post-Match Recap)
   const [showLeaderboard, setShowLeaderboard] = useState(false);
@@ -296,6 +301,29 @@ const App: React.FC = () => {
     }
   };
 
+  const handleQuickRiotLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickRiotId.trim()) return;
+
+    setLoggingInRiot(true);
+    setStatusMsg(null);
+    try {
+      const res = await quickLoginWithRiotId(quickRiotId.trim());
+      setActiveGameTab('VALORANT');
+      setQuickRiotId('');
+      if (token) {
+        await loadUserVideos('VALORANT');
+        setStatusMsg(`Đã liên kết tài khoản VALORANT: ${res.user.riot_game_name}#${res.user.riot_tag_line}`);
+      } else {
+        setTokenState(res.token);
+      }
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Vui lòng nhập đúng định dạng Riot ID#Tag.');
+    } finally {
+      setLoggingInRiot(false);
+    }
+  };
+
   const openAuthUrl = (authUrl: string) => {
     const electronAPI = (window as any).electronAPI;
     if (electronAPI?.openExternal) {
@@ -473,10 +501,18 @@ const App: React.FC = () => {
                     </div>
 
                     <button
-                      onClick={searchResult.gameType === 'PUBG' ? handleSteamLogin : handleRiotLogin}
+                      onClick={() => {
+                        if (searchResult.gameType === 'PUBG') {
+                          handleSteamLogin();
+                        } else {
+                          setQuickRiotId(searchResult.player.name);
+                        }
+                      }}
                       className="text-xs font-semibold text-sky-400 hover:underline"
                     >
-                      Đăng nhập để xem phân tích chi tiết →
+                      {searchResult.gameType === 'PUBG'
+                        ? 'Đăng nhập Steam để xem chi tiết →'
+                        : 'Điền Riot ID để vào phân tích →'}
                     </button>
                   </div>
 
@@ -514,7 +550,7 @@ const App: React.FC = () => {
               )}
             </div>
 
-            {/* Hai thẻ đăng nhập chính thức: Steam (PUBG) và Riot (VALORANT) */}
+            {/* Hai thẻ đăng nhập chính thức: Steam (PUBG) và Riot ID / RSO (VALORANT) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="bg-slate-900/90 border border-slate-800 hover:border-amber-500/50 rounded-2xl p-6 flex flex-col justify-between gap-5 transition">
                 <div className="space-y-2">
@@ -538,7 +574,7 @@ const App: React.FC = () => {
                 </button>
               </div>
 
-              <div className="bg-slate-900/90 border border-slate-800 hover:border-[#ff4655]/50 rounded-2xl p-6 flex flex-col justify-between gap-5 transition">
+              <div className="bg-slate-900/90 border border-slate-800 hover:border-[#ff4655]/50 rounded-2xl p-6 flex flex-col justify-between gap-4 transition">
                 <div className="space-y-2">
                   <span className="inline-block px-2.5 py-0.5 rounded bg-[#ff4655]/15 text-[#ff4655] text-[11px] font-bold">
                     VALORANT
@@ -549,15 +585,35 @@ const App: React.FC = () => {
                   </p>
                 </div>
 
-                <button
-                  onClick={handleRiotLogin}
-                  className="w-full py-3 px-4 rounded-xl bg-[#ff4655] hover:bg-rose-500 text-white font-bold text-xs transition flex items-center justify-center gap-2.5"
-                >
-                  <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                    <path d="M12.534 21.77l-1.09-2.81 10.52.54-.451 4.5zM15.06 0L.307 6.969 2.59 17.471H5.6l-.52-7.512.461-.144 1.81 7.656h3.126l-.116-9.15.462-.144 1.582 9.294h3.31l.78-11.053.462-.144.82 11.197h4.376l1.54-15.37Z" />
-                  </svg>
-                  <span>Đăng nhập bằng Riot Sign On</span>
-                </button>
+                <div className="space-y-2.5">
+                  <form onSubmit={handleQuickRiotLogin} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={quickRiotId}
+                      onChange={(e) => setQuickRiotId(e.target.value)}
+                      placeholder="Nhập Riot ID#Tag (VD: Player#VN1)"
+                      className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#ff4655]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={loggingInRiot || !quickRiotId.trim()}
+                      className="px-4 py-2.5 rounded-xl bg-[#ff4655] hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs transition shrink-0"
+                    >
+                      {loggingInRiot ? 'Đang vào...' : 'Vào ngay'}
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    onClick={handleRiotLogin}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 font-semibold text-[11px] transition flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                      <path d="M12.534 21.77l-1.09-2.81 10.52.54-.451 4.5zM15.06 0L.307 6.969 2.59 17.471H5.6l-.52-7.512.461-.144 1.81 7.656h3.126l-.116-9.15.462-.144 1.582 9.294h3.31l.78-11.053.462-.144.82 11.197h4.376l1.54-15.37Z" />
+                    </svg>
+                    <span>Đăng nhập bằng Riot Sign On (RSO)</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -720,6 +776,25 @@ const App: React.FC = () => {
             >
               {syncingPubg ? 'Đang đồng bộ 20 trận PUBG...' : 'Đồng bộ 20 trận PUBG gần nhất'}
             </button>
+          )}
+
+          {isValo && !profile?.riot_game_name && (
+            <form onSubmit={handleQuickRiotLogin} className="flex gap-1.5">
+              <input
+                type="text"
+                value={quickRiotId}
+                onChange={(e) => setQuickRiotId(e.target.value)}
+                placeholder="Liên kết Riot ID#Tag..."
+                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#ff4655]"
+              />
+              <button
+                type="submit"
+                disabled={loggingInRiot || !quickRiotId.trim()}
+                className="px-3 py-1.5 rounded-lg bg-[#ff4655] hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs transition shrink-0"
+              >
+                {loggingInRiot ? '...' : 'Lưu'}
+              </button>
+            </form>
           )}
 
           {loading ? (

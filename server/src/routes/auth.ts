@@ -314,4 +314,174 @@ router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Respon
   }
 });
 
+// POST /api/auth/riot/quick-login — Đăng nhập hoặc liên kết nhanh bằng Riot ID#Tag
+router.post('/riot/quick-login', async (req: Request, res: Response) => {
+  try {
+    const rawRiotId = String(req.body?.riotId || '').trim();
+    const hashIndex = rawRiotId.indexOf('#');
+
+    if (hashIndex <= 0 || hashIndex === rawRiotId.length - 1) {
+      res.status(400).json({
+        error: 'Vui lòng nhập đúng định dạng Riot ID#Tag (Ví dụ: Player#VN1).',
+      });
+      return;
+    }
+
+    let gameName = rawRiotId.slice(0, hashIndex).trim();
+    let tagLine = rawRiotId.slice(hashIndex + 1).trim();
+
+    if (gameName.length < 2 || tagLine.length < 2 || tagLine.length > 10) {
+      res.status(400).json({ error: 'Tên nhân vật hoặc Tag Line không hợp lệ.' });
+      return;
+    }
+
+    let verifiedPuuid: string | null = null;
+
+    // Xác thực qua Riot Account-V1 nếu server đang có RIOT_API_KEY còn hạn
+    const riotApiKey = process.env.RIOT_API_KEY;
+    if (riotApiKey) {
+      try {
+        const riotRes = await fetch(
+          `https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
+            gameName
+          )}/${encodeURIComponent(tagLine)}`,
+          { headers: { 'X-Riot-Token': riotApiKey } }
+        );
+
+        if (riotRes.status === 404) {
+          res.status(404).json({
+            error: `Không tìm thấy tài khoản "${gameName}#${tagLine}" trên hệ thống Riot Games.`,
+          });
+          return;
+        }
+
+        if (riotRes.ok) {
+          const accountData: any = await riotRes.json();
+          gameName = accountData.gameName || gameName;
+          tagLine = accountData.tagLine || tagLine;
+          verifiedPuuid = accountData.puuid || null;
+        }
+        // Nếu key dev 24h hết hạn (401/403), hệ thống vẫn cho phép đăng nhập theo Riot ID đã nhập
+      } catch {
+        // Bỏ qua lỗi mạng tạm thời tới Riot API
+      }
+    }
+
+    const dbMod = await import('../config/db');
+    const executor: any =
+      (dbMod as any).pool || (dbMod as any).db || (dbMod as any).default;
+
+    if (!executor?.query) {
+      res.status(500).json({ error: 'Không thể kết nối cơ sở dữ liệu.' });
+      return;
+    }
+
+    const jwtMod = await import('jsonwebtoken');
+    const jwtLib: any = (jwtMod as any).default || jwtMod;
+    const jwtSecret = process.env.JWT_SECRET || 'tactical-replay-secret';
+
+    // Kiểm tra xem người dùng có đang gửi kèm token (ví dụ đã đăng nhập Steam từ trước) không
+    let linkedUserId: number | null = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const decoded: any = jwtLib.verify(authHeader.slice(7), jwtSecret);
+        linkedUserId = Number(decoded?.userId || decoded?.id) || null;
+      } catch {
+        linkedUserId = null;
+      }
+    }
+
+    // Kiểm tra cột riot_puuid có tồn tại trong bảng users hay không
+    const [puuidCol]: any = await executor.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'riot_puuid'
+       LIMIT 1`
+    );
+    const hasPuuidColumn = Boolean(puuidCol?.length);
+
+    let userRecord: any = null;
+
+    if (linkedUserId) {
+      if (hasPuuidColumn && verifiedPuuid) {
+        await executor.query(
+          `UPDATE users SET riot_game_name = ?, riot_tag_line = ?, riot_puuid = ? WHERE id = ?`,
+          [gameName, tagLine, verifiedPuuid, linkedUserId]
+        );
+      } else {
+        await executor.query(
+          `UPDATE users SET riot_game_name = ?, riot_tag_line = ? WHERE id = ?`,
+          [gameName, tagLine, linkedUserId]
+        );
+      }
+      const [rows]: any = await executor.query(`SELECT * FROM users WHERE id = ? LIMIT 1`, [
+        linkedUserId,
+      ]);
+      userRecord = rows?.[0];
+    } else {
+      const [existingRows]: any = await executor.query(
+        `SELECT * FROM users
+         WHERE LOWER(riot_game_name) = LOWER(?) AND LOWER(riot_tag_line) = LOWER(?)
+         LIMIT 1`,
+        [gameName, tagLine]
+      );
+
+      if (existingRows?.length > 0) {
+        userRecord = existingRows[0];
+        if (hasPuuidColumn && verifiedPuuid && !userRecord.riot_puuid) {
+          await executor.query(`UPDATE users SET riot_puuid = ? WHERE id = ?`, [
+            verifiedPuuid,
+            userRecord.id,
+          ]);
+        }
+      } else {
+        if (hasPuuidColumn && verifiedPuuid) {
+          const [insertRes]: any = await executor.query(
+            `INSERT INTO users (riot_game_name, riot_tag_line, riot_puuid) VALUES (?, ?, ?)`,
+            [gameName, tagLine, verifiedPuuid]
+          );
+          const [createdRows]: any = await executor.query(
+            `SELECT * FROM users WHERE id = ? LIMIT 1`,
+            [insertRes.insertId]
+          );
+          userRecord = createdRows?.[0];
+        } else {
+          const [insertRes]: any = await executor.query(
+            `INSERT INTO users (riot_game_name, riot_tag_line) VALUES (?, ?)`,
+            [gameName, tagLine]
+          );
+          const [createdRows]: any = await executor.query(
+            `SELECT * FROM users WHERE id = ? LIMIT 1`,
+            [insertRes.insertId]
+          );
+          userRecord = createdRows?.[0];
+        }
+      }
+    }
+
+    const token = jwtLib.sign(
+      {
+        id: userRecord.id,
+        userId: userRecord.id,
+        riotGameName: userRecord.riot_game_name,
+        riotTagLine: userRecord.riot_tag_line,
+      },
+      jwtSecret,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: userRecord.id,
+        riot_game_name: userRecord.riot_game_name,
+        riot_tag_line: userRecord.riot_tag_line,
+      },
+    });
+  } catch (err: any) {
+    console.error('Lỗi /api/auth/riot/quick-login:', err);
+    res.status(500).json({ error: 'Không thể đăng nhập bằng Riot ID lúc này.' });
+  }
+});
+
 export default router;
