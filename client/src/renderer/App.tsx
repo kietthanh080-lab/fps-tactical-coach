@@ -4,13 +4,17 @@ import {
   ArrowRight,
   ArrowsClockwise,
   Broadcast,
+  ChartBar,
   Crosshair,
+  LinkBreak,
   LinkSimple,
   MagnifyingGlass,
+  Record,
   ShareNetwork,
   ShieldCheck,
   SignOut,
   SlidersHorizontal,
+  Swap,
   Trophy,
   VideoCamera,
   X,
@@ -18,11 +22,13 @@ import {
 import {
   API_BASE_URL,
   AuthProvidersStatus,
+  CaptureMode,
   clearAuthToken,
   fetchAuthProviders,
   fetchMatchDetail,
   fetchMyVideos,
   getAuthToken,
+  getCaptureMode,
   getLocalVideoByMatchId,
   PlayerSearchResult,
   pollAuthSession,
@@ -30,8 +36,11 @@ import {
   prepareSteamLinkUrl,
   searchPlayerProfile,
   setAuthToken,
+  setCaptureMode,
   syncRealPubgMatches,
   syncRealValorantMatches,
+  unlinkRiotAccount,
+  updatePubgProfile,
 } from './services/localDb';
 import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
@@ -39,6 +48,7 @@ import { MatchReportUI, TacticalReport } from './components/TacticalReport';
 import { FriendsLeaderboard } from './components/FriendsLeaderboard';
 import { SettingsVaultModal } from './components/SettingsVaultModal';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
+import { MatchTrendModal } from './components/MatchTrendModal';
 
 interface UserProfile {
   id: number;
@@ -170,6 +180,12 @@ const App: React.FC = () => {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showSettingsVault, setShowSettingsVault] = useState(false);
   const [showPostMatchRecap, setShowPostMatchRecap] = useState(false);
+  const [showTrendModal, setShowTrendModal] = useState(false);
+
+  const [captureMode, setCaptureModeState] = useState<CaptureMode>(() => getCaptureMode());
+  const [pubgIgnInput, setPubgIgnInput] = useState('');
+  const [savingPubgIgn, setSavingPubgIgn] = useState(false);
+  const [unlinkingRiot, setUnlinkingRiot] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [syncingPubg, setSyncingPubg] = useState(false);
@@ -305,6 +321,10 @@ const App: React.FC = () => {
     },
     [handleSelectMatch, resetSelection]
   );
+
+  useEffect(() => {
+    setPubgIgnInput(profile?.pubg_player_name || '');
+  }, [profile?.pubg_player_name]);
 
   useEffect(() => {
     if (!token) return;
@@ -537,6 +557,62 @@ const App: React.FC = () => {
     const shareUrl = `${API_BASE_URL}/analyze/public-match/${encodeURIComponent(matchId)}`;
     await navigator.clipboard.writeText(shareUrl);
     setStatusMsg(`Đã sao chép link chia sẻ trận đấu: ${shareUrl}`);
+  };
+
+  const handleToggleCaptureMode = (nextMode: CaptureMode) => {
+    setCaptureMode(nextMode);
+    setCaptureModeState(nextMode);
+    setStatusMsg(
+      nextMode === 'HIGHLIGHT_CLIPS'
+        ? 'Đã chuyển sang chế độ Highlight (~23s quanh mỗi mạng hạ gục, tiết kiệm dung lượng ổ cứng khi chạy Overwolf).'
+        : 'Đã chuyển sang chế độ Quay cả trận (Full Match Replay khi chạy Overwolf).'
+    );
+  };
+
+  const handleSavePubgIgn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = pubgIgnInput.trim();
+    if (!trimmed) {
+      setStatusMsg('Vui lòng nhập chính xác In-Game Name (IGN) PUBG của bạn.');
+      return;
+    }
+
+    setSavingPubgIgn(true);
+    setStatusMsg(null);
+    try {
+      const res = await updatePubgProfile(trimmed);
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              pubg_player_name: res.pubg_player_name,
+              pubg_account_id: res.pubg_account_id,
+            }
+          : prev
+      );
+      setStatusMsg(res.message);
+      await loadUserVideos('PUBG');
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Không thể xác minh IGN PUBG.');
+    } finally {
+      setSavingPubgIgn(false);
+    }
+  };
+
+  const handleUnlinkRiot = async () => {
+    setUnlinkingRiot(true);
+    setStatusMsg(null);
+    try {
+      const res = await unlinkRiotAccount();
+      setAuthToken(res.token);
+      setTokenState(res.token);
+      setStatusMsg(res.message);
+      await loadUserVideos(activeGameTab);
+    } catch (err: any) {
+      setStatusMsg(err.message || 'Không thể hủy liên kết tài khoản Riot.');
+    } finally {
+      setUnlinkingRiot(false);
+    }
   };
 
   const handleLogout = () => {
@@ -871,6 +947,8 @@ const App: React.FC = () => {
   const activeMatch = filteredVideos.find((v) => v.match_id === selectedMatchId);
   const activeRound = rounds.find((r) => r.roundNumber === selectedRound);
   const hasRiotLinked = Boolean(profile?.has_riot_linked);
+  const isOverwolfRuntime =
+    typeof overwolf !== 'undefined' && Boolean(overwolf.media?.replays || overwolf.streaming);
 
   return (
     <div className="min-h-[100dvh] bg-[#0A0D12] text-[#EEF2F6] flex flex-col">
@@ -931,6 +1009,14 @@ const App: React.FC = () => {
             >
               <SlidersHorizontal size={14} weight="bold" aria-hidden="true" />
               <span>Kho Sens &amp; Tâm</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTrendModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
+            >
+              <ChartBar size={14} weight="bold" aria-hidden="true" />
+              <span>Phong độ 20 trận</span>
             </button>
             {activeMatch && (
               <>
@@ -1039,6 +1125,92 @@ const App: React.FC = () => {
             </button>
           </div>
 
+          {/* Trang thai Overwolf Auto-Capture & che do quay */}
+          <div className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 font-mono text-[11px] font-bold ${
+                  isOverwolfRuntime ? 'text-[#10B981]' : 'text-[#94A3B8]'
+                }`}
+              >
+                <Record size={12} weight="fill" aria-hidden="true" />
+                <span>
+                  {isOverwolfRuntime ? 'Overwolf Auto-Capture' : 'Desktop Replay'}
+                </span>
+              </span>
+              <span className="font-mono text-[10px] text-[#64748B]">
+                {captureMode === 'HIGHLIGHT_CLIPS' ? '~23s/Kill' : 'Full Match'}
+              </span>
+            </div>
+
+            <div
+              role="group"
+              aria-label="Chế độ quay video tự động"
+              className="grid grid-cols-2 gap-1 p-0.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]"
+            >
+              <button
+                type="button"
+                aria-pressed={captureMode === 'FULL_MATCH'}
+                onClick={() => handleToggleCaptureMode('FULL_MATCH')}
+                className={`px-2 py-1 rounded-[2px] font-mono text-[11px] font-bold transition duration-150 ${
+                  captureMode === 'FULL_MATCH'
+                    ? 'bg-[#171D28] text-[#EEF2F6] border border-[#38BDF8]/40'
+                    : 'text-[#64748B] hover:text-[#94A3B8]'
+                }`}
+              >
+                Quay cả trận
+              </button>
+              <button
+                type="button"
+                aria-pressed={captureMode === 'HIGHLIGHT_CLIPS'}
+                onClick={() => handleToggleCaptureMode('HIGHLIGHT_CLIPS')}
+                className={`px-2 py-1 rounded-[2px] font-mono text-[11px] font-bold transition duration-150 ${
+                  captureMode === 'HIGHLIGHT_CLIPS'
+                    ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/40'
+                    : 'text-[#64748B] hover:text-[#94A3B8]'
+                }`}
+              >
+                Highlight ~23s
+              </button>
+            </div>
+          </div>
+
+          {!isValo && (
+            <form
+              onSubmit={(e) => void handleSavePubgIgn(e)}
+              className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="pubg-ign-input"
+                  className="font-mono text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]"
+                >
+                  PUBG IGN
+                </label>
+                {profile?.pubg_account_id && (
+                  <span className="font-mono text-[10px] text-[#10B981]">ĐÃ XÁC MINH</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  id="pubg-ign-input"
+                  type="text"
+                  value={pubgIgnInput}
+                  onChange={(e) => setPubgIgnInput(e.target.value)}
+                  placeholder={profile?.steam_persona_name || 'Nhập IGN PUBG chính xác...'}
+                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#E59A23] text-xs font-mono text-[#EEF2F6] placeholder-[#64748B] focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={savingPubgIgn}
+                  className="px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-xs font-bold text-[#E59A23] disabled:opacity-50 transition duration-150 shrink-0"
+                >
+                  {savingPubgIgn ? 'Đang lưu...' : 'Lưu IGN'}
+                </button>
+              </div>
+            </form>
+          )}
+
           {!isValo && (profile?.pubg_player_name || profile?.steam_persona_name) && (
             <button
               type="button"
@@ -1073,16 +1245,40 @@ const App: React.FC = () => {
           )}
 
           {isValo && hasRiotLinked && (
-            <button
-              type="button"
-              onClick={() => void handleSyncValorant()}
-              disabled={syncingValorant}
-              className="w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 disabled:opacity-50 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
-            >
-              {syncingValorant
-                ? 'Đang đồng bộ 20 trận VALORANT...'
-                : 'Đồng bộ 20 trận VALORANT gần nhất'}
-            </button>
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => void handleSyncValorant()}
+                disabled={syncingValorant}
+                className="w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 disabled:opacity-50 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
+              >
+                {syncingValorant
+                  ? 'Đang đồng bộ 20 trận VALORANT...'
+                  : 'Đồng bộ 20 trận VALORANT gần nhất'}
+              </button>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleRiotLogin(true)}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[11px] font-semibold text-[#EEF2F6] transition duration-150"
+                >
+                  <Swap size={13} weight="bold" aria-hidden="true" />
+                  <span>Đổi nick Riot</span>
+                </button>
+                {profile?.steam_id && (
+                  <button
+                    type="button"
+                    onClick={() => void handleUnlinkRiot()}
+                    disabled={unlinkingRiot}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#F43F5E]/15 border border-[#232B3B] hover:border-[#F43F5E]/40 text-[11px] font-semibold text-[#F43F5E] disabled:opacity-50 transition duration-150"
+                  >
+                    <LinkBreak size={13} weight="bold" aria-hidden="true" />
+                    <span>{unlinkingRiot ? 'Đang gỡ...' : 'Hủy liên kết'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
           )}
 
           {loading ? (
@@ -1214,6 +1410,13 @@ const App: React.FC = () => {
         isOpen={showSettingsVault}
         initialGame={activeGameTab}
         onClose={() => setShowSettingsVault(false)}
+      />
+
+      <MatchTrendModal
+        isOpen={showTrendModal}
+        gameType={activeGameTab}
+        matches={filteredVideos}
+        onClose={() => setShowTrendModal(false)}
       />
 
       <PostMatchRecapToast

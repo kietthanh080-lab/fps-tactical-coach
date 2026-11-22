@@ -4,7 +4,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { dbPool, ensureAuthSessionsTable } from '../config/db';
+import { dbPool, ensureAuthSessionsTable, ensureFeatureTables } from '../config/db';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'tactical_replay_secret';
@@ -938,6 +938,219 @@ router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Respon
   } catch (error) {
     console.error('Lỗi lấy danh sách video:', error);
     res.status(500).json({ error: 'Không thể tải danh sách video.' });
+  }
+});
+
+// ============================================================================
+// 4. CẬP NHẬT PUBG IN-GAME NAME (IGN) & KHO PRESET SENS/CROSSHAIR TRÊN CLOUD
+// ============================================================================
+router.put('/pubg-profile', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const rawName = String(req.body?.pubgPlayerName || '').trim();
+
+  if (!userId || rawName.length < 3 || rawName.length > 32) {
+    res.status(400).json({
+      error: 'Tên nhân vật PUBG (IGN) phải dài từ 3 đến 32 ký tự.',
+    });
+    return;
+  }
+
+  try {
+    let exactName = rawName;
+    let accountId: string | null = null;
+
+    if (isConfiguredEnv(process.env.PUBG_API_KEY)) {
+      const shard = process.env.PUBG_SHARD || 'steam';
+      try {
+        const playerRes = await axios.get(
+          `https://api.pubg.com/shards/${shard}/players?filter[playerNames]=${encodeURIComponent(
+            rawName
+          )}`,
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
+              Accept: 'application/vnd.api+json',
+            },
+            timeout: 10000,
+          }
+        );
+
+        const playerObj = playerRes.data?.data?.[0];
+        if (!playerObj) {
+          res.status(404).json({
+            error: `Không tìm thấy nhân vật PUBG "${rawName}" (lưu ý phân biệt chữ hoa/thường).`,
+          });
+          return;
+        }
+        exactName = String(playerObj.attributes?.name || rawName);
+        accountId = String(playerObj.id || '') || null;
+      } catch (err: any) {
+        if (err?.response?.status === 404) {
+          res.status(404).json({
+            error: `Không tìm thấy nhân vật PUBG "${rawName}" (lưu ý phân biệt chữ hoa/thường).`,
+          });
+          return;
+        }
+        if (err?.response?.status === 429) {
+          res.status(429).json({
+            error: 'PUBG API đang giới hạn lượt kiểm tra, vui lòng thử lại sau ít giây.',
+          });
+          return;
+        }
+        throw err;
+      }
+    }
+
+    await dbPool.query(
+      `UPDATE users
+       SET pubg_player_name = ?,
+           pubg_account_id = COALESCE(?, pubg_account_id)
+       WHERE id = ?`,
+      [exactName, accountId, userId]
+    );
+
+    res.json({
+      pubg_player_name: exactName,
+      pubg_account_id: accountId,
+      message: `Đã cập nhật PUBG IGN thành ${exactName}.`,
+    });
+  } catch (error) {
+    console.error('Lỗi cập nhật PUBG IGN:', error);
+    res.status(500).json({ error: 'Không thể cập nhật tên nhân vật PUBG lúc này.' });
+  }
+});
+
+router.get('/presets', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ error: 'Chưa đăng nhập.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    const [rows] = await dbPool.query<RowDataPacket[]>(
+      `SELECT id, game_type, profile_name, dpi, sensitivity,
+              ads_or_scoped_sens, crosshair_code, audio_setup, notes, updated_at
+       FROM user_presets
+       WHERE user_id = ?
+       ORDER BY updated_at DESC`,
+      [userId]
+    );
+
+    const presets = rows.map((r) => ({
+      id: String(r.id),
+      gameType: r.game_type === 'PUBG' ? 'PUBG' : 'VALORANT',
+      profileName: String(r.profile_name),
+      dpi: Number(r.dpi),
+      sensitivity: Number(r.sensitivity),
+      adsOrScopedSens: String(r.ads_or_scoped_sens || 'Mặc định'),
+      crosshairCode: String(r.crosshair_code || ''),
+      audioSetup: String(r.audio_setup || ''),
+      notes: String(r.notes || ''),
+      updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
+    }));
+
+    res.json({ presets });
+  } catch (error) {
+    console.error('Lỗi tải kho preset:', error);
+    res.status(500).json({ error: 'Không thể tải cấu hình đã lưu.' });
+  }
+});
+
+router.post('/presets', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ error: 'Chưa đăng nhập.' });
+    return;
+  }
+
+  const gameType = req.body?.gameType === 'PUBG' ? 'PUBG' : 'VALORANT';
+  const profileName = String(req.body?.profileName || '').trim().slice(0, 120);
+  const dpi = Math.max(100, Math.min(32000, Math.round(Number(req.body?.dpi) || 800)));
+  const sensitivity = Math.max(0.001, Math.min(1000, Number(req.body?.sensitivity) || 1));
+  const adsOrScopedSens = String(req.body?.adsOrScopedSens || 'Mặc định').trim().slice(0, 255);
+  const crosshairCode = String(req.body?.crosshairCode || '').trim().slice(0, 2000);
+  const audioSetup = String(req.body?.audioSetup || '').trim().slice(0, 255);
+  const notes = String(req.body?.notes || '').trim().slice(0, 1000);
+  const id = String(req.body?.id || `preset-${Date.now()}`)
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 64);
+
+  if (!profileName || !id) {
+    res.status(400).json({ error: 'Thiếu tên cấu hình hợp lệ.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    await dbPool.query(
+      `INSERT INTO user_presets (
+        id, user_id, game_type, profile_name, dpi, sensitivity,
+        ads_or_scoped_sens, crosshair_code, audio_setup, notes, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        game_type = VALUES(game_type),
+        profile_name = VALUES(profile_name),
+        dpi = VALUES(dpi),
+        sensitivity = VALUES(sensitivity),
+        ads_or_scoped_sens = VALUES(ads_or_scoped_sens),
+        crosshair_code = VALUES(crosshair_code),
+        audio_setup = VALUES(audio_setup),
+        notes = VALUES(notes),
+        updated_at = NOW()`,
+      [
+        id,
+        userId,
+        gameType,
+        profileName,
+        dpi,
+        sensitivity,
+        adsOrScopedSens,
+        crosshairCode,
+        audioSetup,
+        notes,
+      ]
+    );
+
+    res.json({
+      preset: {
+        id,
+        gameType,
+        profileName,
+        dpi,
+        sensitivity,
+        adsOrScopedSens,
+        crosshairCode,
+        audioSetup,
+        notes,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Lỗi lưu preset:', error);
+    res.status(500).json({ error: 'Không thể lưu cấu hình lên cloud.' });
+  }
+});
+
+router.delete('/presets/:presetId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const presetId = String(req.params.presetId || '').trim();
+  if (!userId || !presetId) {
+    res.status(400).json({ error: 'Thiếu thông tin cấu hình cần xóa.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    await dbPool.query('DELETE FROM user_presets WHERE id = ? AND user_id = ?', [
+      presetId,
+      userId,
+    ]);
+    res.json({ deleted: true });
+  } catch (error) {
+    console.error('Lỗi xóa preset:', error);
+    res.status(500).json({ error: 'Không thể xóa cấu hình lúc này.' });
   }
 });
 

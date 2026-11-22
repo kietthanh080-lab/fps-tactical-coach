@@ -1,7 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { Trophy, X } from '@phosphor-icons/react';
-import { fetchLeaderboard } from '../services/localDb';
+import { Check, Copy, Plus, SignOut, Trophy, UsersThree, X } from '@phosphor-icons/react';
+import {
+  createSquad,
+  fetchLeaderboard,
+  fetchSquads,
+  joinSquad,
+  leaveSquad,
+  SquadInfo,
+} from '../services/localDb';
 
 export interface LeaderboardEntry {
   userId: number;
@@ -30,6 +37,14 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
 }) => {
   const reduceMotion = useReducedMotion();
   const [gameTab, setGameTab] = useState<'VALORANT' | 'PUBG'>(initialGame);
+  const [squads, setSquads] = useState<SquadInfo[]>([]);
+  const [selectedSquadId, setSelectedSquadId] = useState<number | null>(null);
+
+  const [newSquadName, setNewSquadName] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [squadActionBusy, setSquadActionBusy] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -38,6 +53,25 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
     setGameTab(initialGame);
   }, [initialGame]);
 
+  const refreshSquads = useCallback(async () => {
+    try {
+      const data = await fetchSquads();
+      const list = data.squads || [];
+      setSquads(list);
+      setSelectedSquadId((prev) => {
+        if (prev && list.some((s) => s.id === prev)) return prev;
+        return list.length > 0 ? list[0].id : null;
+      });
+    } catch {
+      // Giữ danh sách hiện tại
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void refreshSquads();
+  }, [isOpen, refreshSquads]);
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -45,7 +79,7 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
       setLoading(true);
       setErrorMsg(null);
       try {
-        const data = await fetchLeaderboard(gameTab);
+        const data = await fetchLeaderboard(gameTab, selectedSquadId);
         setEntries(data.leaderboard || []);
       } catch (err: any) {
         setErrorMsg(err.message || 'Lỗi kết nối bảng xếp hạng.');
@@ -55,9 +89,66 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
     };
 
     void loadLeaderboard();
-  }, [isOpen, gameTab]);
+  }, [isOpen, gameTab, selectedSquadId]);
 
+  const handleCreateSquad = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSquadName.trim() || squadActionBusy) return;
+    setSquadActionBusy(true);
+    setErrorMsg(null);
+    try {
+      const res = await createSquad(newSquadName.trim());
+      setNewSquadName('');
+      await refreshSquads();
+      if (res.squad?.id) setSelectedSquadId(res.squad.id);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Không thể tạo Squad.');
+    } finally {
+      setSquadActionBusy(false);
+    }
+  };
+
+  const handleJoinSquad = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinCode.trim() || squadActionBusy) return;
+    setSquadActionBusy(true);
+    setErrorMsg(null);
+    try {
+      const res = await joinSquad(joinCode.trim());
+      setJoinCode('');
+      await refreshSquads();
+      if (res.squad?.id) setSelectedSquadId(res.squad.id);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Không thể tham gia Squad.');
+    } finally {
+      setSquadActionBusy(false);
+    }
+  };
+
+  const handleLeaveSelectedSquad = async () => {
+    if (!selectedSquadId || squadActionBusy) return;
+    setSquadActionBusy(true);
+    setErrorMsg(null);
+    try {
+      await leaveSquad(selectedSquadId);
+      setSelectedSquadId(null);
+      await refreshSquads();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Không thể rời Squad.');
+    } finally {
+      setSquadActionBusy(false);
+    }
+  };
+
+  const activeSquad = squads.find((s) => s.id === selectedSquadId) || null;
   const isValo = gameTab === 'VALORANT';
+
+  const handleCopySquadCode = async () => {
+    if (!activeSquad?.code) return;
+    await navigator.clipboard.writeText(activeSquad.code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
 
   return (
     <AnimatePresence>
@@ -77,7 +168,7 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: 8 }}
             transition={{ type: 'spring', stiffness: 320, damping: 28 }}
-            className="w-full max-w-4xl rounded-[4px] border border-[#334155] bg-[#10141C] shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            className="w-full max-w-4xl rounded-[4px] border border-[#334155] bg-[#10141C] shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
           >
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232B3B] px-6 py-4 bg-[#0A0D12]">
               <div className="flex items-center gap-3">
@@ -89,10 +180,10 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
                     id="leaderboard-modal-title"
                     className="font-display text-base font-bold text-[#EEF2F6]"
                   >
-                    Bảng xếp hạng &amp; So sánh thành tích nhóm
+                    Bảng xếp hạng Squad riêng tư
                   </h2>
                   <p className="text-xs text-[#94A3B8]">
-                    Tổng hợp phong độ từ 20 trận gần nhất của các thành viên trong hệ thống
+                    Chỉ so sánh thành tích 20 trận gần nhất giữa các thành viên trong Squad của bạn
                   </p>
                 </div>
               </div>
@@ -131,10 +222,118 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
               </div>
             </div>
 
+            {/* Thanh quan ly Squad & ma moi ban be */}
+            <div className="border-b border-[#232B3B] bg-[#0A0D12]/60 px-6 py-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSquadId(null)}
+                    className={`px-2.5 py-1 rounded-[2px] font-mono text-xs font-bold border transition ${
+                      selectedSquadId === null
+                        ? 'bg-[#38BDF8]/15 border-[#38BDF8] text-[#38BDF8]'
+                        : 'bg-[#10141C] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6]'
+                    }`}
+                  >
+                    Chỉ mình tôi
+                  </button>
+                  {squads.map((sq) => (
+                    <button
+                      key={sq.id}
+                      type="button"
+                      onClick={() => setSelectedSquadId(sq.id)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] font-mono text-xs font-bold border transition ${
+                        selectedSquadId === sq.id
+                          ? 'bg-[#10B981]/15 border-[#10B981] text-[#10B981]'
+                          : 'bg-[#10141C] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6]'
+                      }`}
+                    >
+                      <UsersThree size={12} weight="bold" aria-hidden="true" />
+                      <span>{sq.name}</span>
+                      <span className="text-[10px] opacity-80">({sq.memberCount})</span>
+                    </button>
+                  ))}
+                </div>
+
+                {activeSquad && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopySquadCode()}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[11px] font-bold text-[#E59A23]"
+                    >
+                      {copiedCode ? (
+                        <Check size={12} weight="bold" aria-hidden="true" />
+                      ) : (
+                        <Copy size={12} weight="bold" aria-hidden="true" />
+                      )}
+                      <span>{copiedCode ? 'Đã chép mã!' : `Mã mời: ${activeSquad.code}`}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleLeaveSelectedSquad()}
+                      disabled={squadActionBusy}
+                      title="Rời Squad này"
+                      aria-label={`Rời Squad ${activeSquad.name}`}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#F43F5E]/15 border border-[#232B3B] text-[11px] text-[#94A3B8] hover:text-[#F43F5E]"
+                    >
+                      <SignOut size={12} weight="bold" aria-hidden="true" />
+                      <span>Rời</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <form onSubmit={(e) => void handleCreateSquad(e)} className="flex gap-1.5">
+                  <label htmlFor="create-squad-name" className="sr-only">
+                    Tên Squad mới
+                  </label>
+                  <input
+                    id="create-squad-name"
+                    type="text"
+                    value={newSquadName}
+                    onChange={(e) => setNewSquadName(e.target.value)}
+                    placeholder="Tên Squad mới (VD: Team Ha Noi)..."
+                    className="flex-1 min-w-0 px-2.5 py-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] text-xs text-[#EEF2F6] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={squadActionBusy || !newSquadName.trim()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-[2px] bg-[#10B981] hover:bg-emerald-400 disabled:opacity-40 text-[#0A0D12] font-bold text-xs shrink-0"
+                  >
+                    <Plus size={12} weight="bold" aria-hidden="true" />
+                    <span>Tạo Squad</span>
+                  </button>
+                </form>
+
+                <form onSubmit={(e) => void handleJoinSquad(e)} className="flex gap-1.5">
+                  <label htmlFor="join-squad-code" className="sr-only">
+                    Mã mời tham gia Squad
+                  </label>
+                  <input
+                    id="join-squad-code"
+                    type="text"
+                    value={joinCode}
+                    onChange={(e) => setJoinCode(e.target.value)}
+                    placeholder="Nhập mã mời (VD: TR-A1B2C3)..."
+                    className="flex-1 min-w-0 px-2.5 py-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] font-mono text-xs text-[#EEF2F6] placeholder:text-[#64748B] uppercase focus:outline-none focus:border-[#38BDF8]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={squadActionBusy || !joinCode.trim()}
+                    className="px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#334155] disabled:opacity-40 text-[#EEF2F6] font-bold text-xs shrink-0"
+                  >
+                    Tham gia
+                  </button>
+                </form>
+              </div>
+            </div>
+
             <div className="flex-1 overflow-y-auto tactical-scrollbar p-6">
               {loading ? (
                 <div className="space-y-2.5 py-4">
-                  {[1, 2, 3, 4].map((row) => (
+                  {[1, 2, 3].map((row) => (
                     <div
                       key={row}
                       className="h-11 w-full rounded-[2px] bg-[#171D28] animate-pulse border border-[#232B3B]"
@@ -147,7 +346,7 @@ export const FriendsLeaderboard: React.FC<FriendsLeaderboardProps> = ({
                 </div>
               ) : entries.length === 0 ? (
                 <p className="py-10 text-center text-xs text-[#64748B]">
-                  Chưa có dữ liệu trận đấu {gameTab} nào để xếp hạng.
+                  Chưa có dữ liệu trận đấu {gameTab} nào trong phạm vi đang chọn.
                 </p>
               ) : (
                 <div className="overflow-x-auto">

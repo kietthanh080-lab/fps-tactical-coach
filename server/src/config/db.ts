@@ -26,6 +26,7 @@ export const dbPool = mysql.createPool({
 });
 
 let authSessionsReadyPromise: Promise<void> | null = null;
+let featureTablesReadyPromise: Promise<void> | null = null;
 
 export async function ensureAuthSessionsTable(): Promise<void> {
   if (!authSessionsReadyPromise) {
@@ -47,19 +48,57 @@ export async function ensureAuthSessionsTable(): Promise<void> {
   await authSessionsReadyPromise;
 }
 
+export async function ensureFeatureTables(): Promise<void> {
+  if (!featureTablesReadyPromise) {
+    featureTablesReadyPromise = (async () => {
+      await dbPool.query(
+        `CREATE TABLE IF NOT EXISTS user_presets (
+          id VARCHAR(64) PRIMARY KEY,
+          user_id INT NOT NULL,
+          game_type ENUM('VALORANT', 'PUBG') NOT NULL,
+          profile_name VARCHAR(120) NOT NULL,
+          dpi INT NOT NULL DEFAULT 800,
+          sensitivity DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+          ads_or_scoped_sens VARCHAR(255) NULL,
+          crosshair_code TEXT NULL,
+          audio_setup VARCHAR(255) NULL,
+          notes TEXT NULL,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_presets_user (user_id, game_type, updated_at)
+        )`
+      );
+      await dbPool.query(
+        `CREATE TABLE IF NOT EXISTS squads (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          code VARCHAR(16) UNIQUE NOT NULL,
+          name VARCHAR(80) NOT NULL,
+          owner_user_id INT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`
+      );
+      await dbPool.query(
+        `CREATE TABLE IF NOT EXISTS squad_members (
+          squad_id INT NOT NULL,
+          user_id INT NOT NULL,
+          joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (squad_id, user_id)
+        )`
+      );
+    })().catch((err) => {
+      featureTablesReadyPromise = null;
+      throw err;
+    });
+  }
+  await featureTablesReadyPromise;
+}
+
 export async function testDatabaseConnection(): Promise<void> {
   try {
     const connection = await dbPool.getConnection();
     console.log(`Kết nối MySQL (${process.env.DB_NAME || 'fps_tactical_coach'}) thành công.`);
 
-    await connection.query(
-      `CREATE TABLE IF NOT EXISTS auth_sessions (
-        session_id VARCHAR(64) PRIMARY KEY,
-        token TEXT NULL,
-        error_message TEXT NULL,
-        expires_at DATETIME NOT NULL
-      )`
-    );
+    await ensureAuthSessionsTable();
+    await ensureFeatureTables();
 
     const alterQueries = [
       'ALTER TABLE users ADD COLUMN steam_id VARCHAR(50) UNIQUE NULL AFTER riot_refresh_token',

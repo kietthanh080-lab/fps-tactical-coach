@@ -70,3 +70,33 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   error_message TEXT NULL,
   expires_at DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_presets (
+  id VARCHAR(64) PRIMARY KEY,
+  user_id INT NOT NULL,
+  game_type ENUM('VALORANT', 'PUBG') NOT NULL,
+  profile_name VARCHAR(120) NOT NULL,
+  dpi INT NOT NULL DEFAULT 800,
+  sensitivity DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+  ads_or_scoped_sens VARCHAR(255) NULL,
+  crosshair_code TEXT NULL,
+  audio_setup VARCHAR(255) NULL,
+  notes TEXT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_presets_user (user_id, game_type, updated_at)
+);
+
+CREATE TABLE IF NOT EXISTS squads (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(16) UNIQUE NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  owner_user_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS squad_members (
+  squad_id INT NOT NULL,
+  user_id INT NOT NULL,
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (squad_id, user_id)
+);

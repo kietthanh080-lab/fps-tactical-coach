@@ -41,10 +41,12 @@ interface DrawShape {
 }
 
 interface TimelineMarker {
+  id: string;
   roundNumber: number;
   timestampSec: number;
   type: 'kill' | 'death' | 'objective';
   label: string;
+  isExact: boolean;
 }
 
 const TACTICAL_COLORS = [
@@ -60,6 +62,10 @@ const formatTime = (seconds: number): string => {
   const secs = Math.floor(seconds % 60);
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 };
+
+function getTelestratorStorageKey(matchId: string): string {
+  return `tactical_replay_telestrator_${matchId}`;
+}
 
 export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   gameType,
@@ -92,9 +98,10 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const [drawMode, setDrawMode] = useState(false);
   const [activeTool, setActiveTool] = useState<DrawTool>('arrow');
   const [activeColor, setActiveColor] = useState<string>('#EF4444');
-  const [shapes, setShapes] = useState<DrawShape[]>([]);
+  const [shapesByRound, setShapesByRound] = useState<Record<number, DrawShape[]>>({});
   const [currentShape, setCurrentShape] = useState<DrawShape | null>(null);
 
+  const shapes = shapesByRound[selectedRound] || [];
   const shapesRef = useRef<DrawShape[]>([]);
   const currentShapeRef = useRef<DrawShape | null>(null);
   const isDrawingRef = useRef(false);
@@ -115,12 +122,37 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   useEffect(() => {
     setLocalPreviewSrc(null);
     setUploadError(null);
-    setShapes([]);
     setCurrentShape(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+
+    if (!matchId) {
+      setShapesByRound({});
+      return;
+    }
+
+    try {
+      const saved = localStorage.getItem(getTelestratorStorageKey(matchId));
+      setShapesByRound(saved ? (JSON.parse(saved) as Record<number, DrawShape[]>) : {});
+    } catch {
+      setShapesByRound({});
+    }
   }, [matchId]);
+
+  useEffect(() => {
+    if (!matchId) return;
+    try {
+      const hasAnyShape = Object.values(shapesByRound).some((arr) => arr.length > 0);
+      if (hasAnyShape) {
+        localStorage.setItem(getTelestratorStorageKey(matchId), JSON.stringify(shapesByRound));
+      } else {
+        localStorage.removeItem(getTelestratorStorageKey(matchId));
+      }
+    } catch {
+      // Bỏ qua nếu localStorage đầy
+    }
+  }, [matchId, shapesByRound]);
 
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -203,7 +235,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
   useEffect(() => {
     redrawCanvas();
-  }, [shapes, currentShape, redrawCanvas]);
+  }, [shapes, selectedRound, currentShape, redrawCanvas]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -264,20 +296,76 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeVideoUrl, togglePlay, seekTo]);
 
+  // Tinh toan moc thoi gian that tu startTimestampMs va events (KILL / DEATH / SPIKE_PLANTED)
   const timelineMarkers = useMemo<TimelineMarker[]>(() => {
     if (duration <= 0 || rounds.length === 0) return [];
 
-    return rounds.map((r, index) => {
-      const explicitSec = r.timestampSec ?? r.startTimeSec;
-      const estimatedSec =
-        typeof explicitSec === 'number' && explicitSec >= 0
-          ? Math.min(duration, explicitSec)
-          : ((index + 0.5) / rounds.length) * duration;
+    const hasRealRoundStart = rounds.some(
+      (r, idx) =>
+        (typeof r.startTimestampMs === 'number' && r.startTimestampMs > 0 && idx > 0) ||
+        typeof r.timestampSec === 'number' ||
+        typeof r.startTimeSec === 'number'
+    );
+
+    const markers: TimelineMarker[] = [];
+
+    rounds.forEach((r, index) => {
+      const prefix = isValo ? `Round ${r.roundNumber}` : `Phase ${r.roundNumber}`;
+
+      // 1. Uu tien cac moc su kien KILL / DEATH / SPIKE_PLANTED co timestampMs that trong video
+      const actionEvents = (r.events || []).filter(
+        (ev) =>
+          (ev.type === 'KILL' || ev.type === 'DEATH' || ev.type === 'SPIKE_PLANTED') &&
+          typeof ev.timestampMs === 'number' &&
+          ev.timestampMs >= 0 &&
+          ev.timestampMs / 1000 <= duration + 2
+      );
+
+      if (actionEvents.length > 0) {
+        actionEvents.forEach((ev, evIdx) => {
+          const evSec = Math.min(duration, Math.max(0, ev.timestampMs / 1000));
+          const type: TimelineMarker['type'] =
+            ev.type === 'KILL' ? 'kill' : ev.type === 'DEATH' ? 'death' : 'objective';
+
+          const weapon = ev.payload?.weapon ? ` (${String(ev.payload.weapon)})` : '';
+          const dist = ev.payload?.distanceMeters
+            ? ` ${String(ev.payload.distanceMeters)}m`
+            : '';
+          const label =
+            ev.type === 'KILL'
+              ? `${prefix}: Hạ gục${weapon}${dist}`
+              : ev.type === 'DEATH'
+              ? `${prefix}: Bị hạ gục${weapon}`
+              : `${prefix}: Đặt Spike`;
+
+          markers.push({
+            id: `r${r.roundNumber}-ev${evIdx}`,
+            roundNumber: r.roundNumber,
+            timestampSec: evSec,
+            type,
+            label,
+            isExact: true,
+          });
+        });
+        return;
+      }
+
+      // 2. Neu chua co event rieng, dung startTimestampMs hoac timestampSec that cua Round/Phase
+      const explicitSec =
+        r.timestampSec ??
+        r.startTimeSec ??
+        (typeof r.startTimestampMs === 'number' && hasRealRoundStart
+          ? r.startTimestampMs / 1000
+          : undefined);
+
+      const isExact = typeof explicitSec === 'number' && explicitSec >= 0 && explicitSec <= duration + 5;
+      const resolvedSec = isExact
+        ? Math.min(duration, Math.max(0, explicitSec))
+        : ((index + 0.5) / rounds.length) * duration;
 
       const type: TimelineMarker['type'] =
         r.kills > 0 ? 'kill' : r.deaths > 0 ? 'death' : 'objective';
 
-      const prefix = isValo ? `Round ${r.roundNumber}` : `Phase ${r.roundNumber}`;
       const label =
         r.kills > 0
           ? `${prefix}: ${r.kills} Kill (${r.damageDealt} DMG)`
@@ -285,19 +373,28 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           ? `${prefix}: Bị hạ gục (${r.result})`
           : `${prefix}: ${r.result} - ${r.economyType}`;
 
-      return {
+      markers.push({
+        id: `r${r.roundNumber}`,
         roundNumber: r.roundNumber,
-        timestampSec: estimatedSec,
+        timestampSec: resolvedSec,
         type,
         label,
-      };
+        isExact,
+      });
     });
+
+    return markers;
   }, [rounds, duration, isValo]);
 
-  const handleSelectRoundAndSeek = (roundNumber: number) => {
+  const handleSelectRoundAndSeek = (roundNumber: number, explicitSec?: number) => {
     onSelectRound(roundNumber);
+    if (!videoRef.current) return;
+    if (typeof explicitSec === 'number') {
+      seekTo(Math.max(0, explicitSec - 2));
+      return;
+    }
     const marker = timelineMarkers.find((m) => m.roundNumber === roundNumber);
-    if (marker && videoRef.current) {
+    if (marker) {
       seekTo(Math.max(0, marker.timestampSec - 2));
     }
   };
@@ -353,8 +450,30 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const handlePointerUp = () => {
     if (!isDrawingRef.current || !currentShape) return;
     isDrawingRef.current = false;
-    setShapes((prev) => [...prev, currentShape]);
+    setShapesByRound((prev) => ({
+      ...prev,
+      [selectedRound]: [...(prev[selectedRound] || []), currentShape],
+    }));
     setCurrentShape(null);
+  };
+
+  const handleUndoShape = () => {
+    setShapesByRound((prev) => {
+      const currentList = prev[selectedRound] || [];
+      if (currentList.length === 0) return prev;
+      return {
+        ...prev,
+        [selectedRound]: currentList.slice(0, -1),
+      };
+    });
+  };
+
+  const handleClearRoundShapes = () => {
+    setShapesByRound((prev) => {
+      const next = { ...prev };
+      delete next[selectedRound];
+      return next;
+    });
   };
 
   const handleUploadHighlightFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -453,7 +572,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 }`}
               >
                 <PencilSimple size={14} weight="bold" aria-hidden="true" />
-                <span>{drawMode ? 'Đang bật Bút Vẽ (D)' : 'Vẽ chiến thuật (D)'}</span>
+                <span>
+                  {drawMode
+                    ? `Đang vẽ ${isValo ? `R${selectedRound}` : `P${selectedRound}`} (D)`
+                    : 'Vẽ chiến thuật (D)'}
+                </span>
               </button>
             )}
           </div>
@@ -514,7 +637,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
               <button
                 type="button"
-                onClick={() => setShapes((prev) => prev.slice(0, -1))}
+                onClick={handleUndoShape}
                 disabled={shapes.length === 0}
                 className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#94A3B8] hover:text-[#EEF2F6] disabled:opacity-40"
               >
@@ -523,7 +646,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setShapes([])}
+                onClick={handleClearRoundShapes}
                 disabled={shapes.length === 0}
                 className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#F43F5E] hover:bg-[#232B3B] disabled:opacity-40"
               >
@@ -596,7 +719,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 }`}
               />
 
-              {/* HUD Corner Reticle Marks */}
               <span className="pointer-events-none absolute top-2 left-2 h-2.5 w-2.5 border-t border-l border-[#94A3B8]/40" />
               <span className="pointer-events-none absolute top-2 right-2 h-2.5 w-2.5 border-t border-r border-[#94A3B8]/40" />
               <span className="pointer-events-none absolute bottom-2 left-2 h-2.5 w-2.5 border-b border-l border-[#94A3B8]/40" />
@@ -651,12 +773,12 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                       );
                       return (
                         <button
-                          key={mk.roundNumber}
+                          key={mk.id}
                           type="button"
                           aria-label={mk.label}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleSelectRoundAndSeek(mk.roundNumber);
+                            handleSelectRoundAndSeek(mk.roundNumber, mk.timestampSec);
                           }}
                           onMouseEnter={() => setHoveredMarker(mk)}
                           onMouseLeave={() => setHoveredMarker(null)}
@@ -734,7 +856,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           gameType={gameType}
           rounds={rounds}
           selectedRound={selectedRound}
-          onSelectRound={handleSelectRoundAndSeek}
+          onSelectRound={(roundNum) => handleSelectRoundAndSeek(roundNum)}
         />
       )}
     </div>

@@ -1,11 +1,13 @@
+import crypto from 'crypto';
 import { Router, Response, Request } from 'express';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { RowDataPacket } from 'mysql2';
-import { dbPool } from '../config/db';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { dbPool, ensureFeatureTables } from '../config/db';
 import { authenticateToken, AuthRequest, isConfiguredEnv } from './auth';
+import { createPresignedPutUrl, getS3Config } from '../utils/s3Presign';
 import {
   analyzeRoundTactics,
   parsePubgTelemetryToRounds,
@@ -273,7 +275,78 @@ function parseValorantMatchToRounds(
   });
 }
 
-// 1. POST /api/analyze/highlight/upload
+// 1. POST /api/analyze/highlight/presign — Cấp Presigned URL upload thẳng lên Cloudflare R2 / S3
+router.post('/highlight/presign', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const rawMatchId = String(req.body?.matchId || '').trim();
+  const fileName = String(req.body?.fileName || 'highlight.mp4').trim();
+
+  if (!userId || !rawMatchId) {
+    res.status(400).json({ error: 'Thiếu mã trận đấu (matchId).' });
+    return;
+  }
+
+  const s3Config = getS3Config();
+  if (!s3Config) {
+    res.json({
+      mode: 'direct-server',
+      uploadUrl: '/analyze/highlight/upload',
+    });
+    return;
+  }
+
+  const safeMatchId = rawMatchId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const ext = path.extname(fileName) || '.mp4';
+  const objectKey = `highlights/${userId}/${safeMatchId}_${Date.now()}${ext}`;
+
+  try {
+    const { presignedUrl, publicUrl } = createPresignedPutUrl(s3Config, objectKey, 900);
+    res.json({
+      mode: 's3-presigned',
+      presignedUrl,
+      publicUrl,
+      key: objectKey,
+    });
+  } catch (err) {
+    console.error('Lỗi tạo presigned URL:', err);
+    res.status(500).json({ error: 'Không thể khởi tạo URL upload cloud.' });
+  }
+});
+
+// 1b. POST /api/analyze/highlight/confirm — Lưu URL cloud sau khi upload trực tiếp thành công
+router.post('/highlight/confirm', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const matchId = String(req.body?.matchId || '').trim();
+  const cloudVideoUrl = String(req.body?.cloudVideoUrl || '').trim();
+  const localVideoFilename = req.body?.localVideoFilename
+    ? String(req.body.localVideoFilename).trim()
+    : null;
+
+  if (!userId || !matchId || !/^https?:\/\//i.test(cloudVideoUrl)) {
+    res.status(400).json({ error: 'URL video cloud hoặc mã trận đấu không hợp lệ.' });
+    return;
+  }
+
+  try {
+    await dbPool.query(
+      `UPDATE matches
+       SET cloud_video_url = ?, local_video_filename = COALESCE(local_video_filename, ?)
+       WHERE match_id = ? AND user_id = ?`,
+      [cloudVideoUrl, localVideoFilename, matchId, userId]
+    );
+
+    res.json({
+      matchId,
+      cloudVideoUrl,
+      fileName: localVideoFilename || undefined,
+    });
+  } catch (error) {
+    console.error('Lỗi xác nhận cloud video URL:', error);
+    res.status(500).json({ error: 'Không thể lưu liên kết video cloud.' });
+  }
+});
+
+// 1c. POST /api/analyze/highlight/upload (Fallback upload trực tiếp qua server)
 router.post(
   '/highlight/upload',
   authenticateToken,
@@ -1203,7 +1276,7 @@ router.get('/player-search', async (req, res: Response) => {
     res.json({
       gameType: 'VALORANT',
       player: {
-        id: puuid,
+        id: `${String(puuid).slice(0, 8)}...`,
         name: `${exactGameName}#${exactTagLine}`,
         region: activeShard,
       },
@@ -1335,12 +1408,187 @@ THÔNG TIN TRẬN ĐẤU:
   }
 });
 
-// GET /api/analyze/leaderboard — Tổng hợp bảng xếp hạng thành tích nhóm từ TiDB Cloud
-router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Response) => {
-  try {
-    const gameType = req.query.gameType === 'VALORANT' ? 'VALORANT' : 'PUBG';
+// ============================================================================
+// QUẢN LÝ SQUAD (NHÓM BẠN BÈ) & BẢNG XẾP HẠNG RIÊNG TƯ
+// ============================================================================
+router.get('/squads', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ error: 'Chưa đăng nhập.' });
+    return;
+  }
 
-    // Tự động dò tên bảng lưu danh sách trận đấu trong TiDB
+  try {
+    await ensureFeatureTables();
+    const [rows] = await dbPool.query<RowDataPacket[]>(
+      `SELECT s.id, s.code, s.name, s.owner_user_id,
+              (SELECT COUNT(*) FROM squad_members sm2 WHERE sm2.squad_id = s.id) AS member_count
+       FROM squads s
+       INNER JOIN squad_members sm ON sm.squad_id = s.id
+       WHERE sm.user_id = ?
+       ORDER BY s.created_at DESC`,
+      [userId]
+    );
+
+    res.json({
+      squads: rows.map((r) => ({
+        id: Number(r.id),
+        code: String(r.code),
+        name: String(r.name),
+        ownerUserId: Number(r.owner_user_id),
+        memberCount: Number(r.member_count || 1),
+      })),
+    });
+  } catch (err) {
+    console.error('Lỗi tải danh sách Squad:', err);
+    res.status(500).json({ error: 'Không thể tải danh sách nhóm bạn bè.' });
+  }
+});
+
+router.post('/squads', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const name = String(req.body?.name || '').trim();
+  if (!userId || name.length < 2 || name.length > 50) {
+    res.status(400).json({ error: 'Tên Squad phải dài từ 2 đến 50 ký tự.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    const code = `TR-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+    const [insertRes] = await dbPool.query<ResultSetHeader>(
+      'INSERT INTO squads (code, name, owner_user_id) VALUES (?, ?, ?)',
+      [code, name, userId]
+    );
+    const squadId = Number(insertRes.insertId);
+
+    await dbPool.query(
+      'INSERT INTO squad_members (squad_id, user_id) VALUES (?, ?)',
+      [squadId, userId]
+    );
+
+    res.json({
+      squad: {
+        id: squadId,
+        code,
+        name,
+        ownerUserId: userId,
+        memberCount: 1,
+      },
+    });
+  } catch (err) {
+    console.error('Lỗi tạo Squad:', err);
+    res.status(500).json({ error: 'Không thể tạo Squad lúc này.' });
+  }
+});
+
+router.post('/squads/join', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  if (!userId || !code) {
+    res.status(400).json({ error: 'Vui lòng nhập mã mời Squad hợp lệ.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    const [rows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT id, code, name, owner_user_id FROM squads WHERE code = ? LIMIT 1',
+      [code]
+    );
+
+    const squad = rows[0];
+    if (!squad) {
+      res.status(404).json({ error: `Không tìm thấy Squad nào có mã "${code}".` });
+      return;
+    }
+
+    await dbPool.query(
+      'INSERT IGNORE INTO squad_members (squad_id, user_id) VALUES (?, ?)',
+      [squad.id, userId]
+    );
+
+    const [countRows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM squad_members WHERE squad_id = ?',
+      [squad.id]
+    );
+
+    res.json({
+      squad: {
+        id: Number(squad.id),
+        code: String(squad.code),
+        name: String(squad.name),
+        ownerUserId: Number(squad.owner_user_id),
+        memberCount: Number(countRows[0]?.cnt || 1),
+      },
+    });
+  } catch (err) {
+    console.error('Lỗi tham gia Squad:', err);
+    res.status(500).json({ error: 'Không thể tham gia Squad lúc này.' });
+  }
+});
+
+router.post('/squads/:squadId/leave', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const squadId = Number(req.params.squadId);
+  if (!userId || !Number.isFinite(squadId) || squadId <= 0) {
+    res.status(400).json({ error: 'Mã Squad không hợp lệ.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    await dbPool.query('DELETE FROM squad_members WHERE squad_id = ? AND user_id = ?', [
+      squadId,
+      userId,
+    ]);
+
+    const [remain] = await dbPool.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM squad_members WHERE squad_id = ?',
+      [squadId]
+    );
+    if (Number(remain[0]?.cnt || 0) === 0) {
+      await dbPool.query('DELETE FROM squads WHERE id = ?', [squadId]);
+    }
+
+    res.json({ left: true });
+  } catch (err) {
+    console.error('Lỗi rời Squad:', err);
+    res.status(500).json({ error: 'Không thể rời Squad lúc này.' });
+  }
+});
+
+// GET /api/analyze/leaderboard — Bảng xếp hạng giới hạn theo Squad hoặc chính bản thân
+router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ error: 'Chưa đăng nhập.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    const gameType = req.query.gameType === 'VALORANT' ? 'VALORANT' : 'PUBG';
+    const squadIdRaw = req.query.squadId ? Number(req.query.squadId) : null;
+
+    let targetUserIds: number[] = [userId];
+    let scope: 'self' | 'squad' = 'self';
+
+    if (squadIdRaw && Number.isFinite(squadIdRaw) && squadIdRaw > 0) {
+      const [memberCheck] = await dbPool.query<RowDataPacket[]>(
+        'SELECT user_id FROM squad_members WHERE squad_id = ?',
+        [squadIdRaw]
+      );
+      const memberIds = memberCheck.map((r) => Number(r.user_id));
+      if (!memberIds.includes(userId)) {
+        res.status(403).json({ error: 'Bạn không thuộc Squad này.' });
+        return;
+      }
+      targetUserIds = memberIds;
+      scope = 'squad';
+    }
+
     const [tableRows]: any = await dbPool.query(
       `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'match_result'
@@ -1350,23 +1598,43 @@ router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Resp
 
     const [users]: any = await dbPool.query(
       `SELECT id, riot_game_name, riot_tag_line, steam_persona_name, steam_avatar, pubg_player_name
-       FROM users`
+       FROM users
+       WHERE id IN (?)`,
+      [targetUserIds]
     );
 
     const [matches]: any = await dbPool.query(
-      `SELECT user_id, match_result, score_summary, cloud_video_url, local_video_filename, played_at
+      `SELECT match_id, user_id, match_result, score_summary, cloud_video_url, local_video_filename, played_at
        FROM \`${matchesTable}\`
-       WHERE game_type = ?
+       WHERE game_type = ? AND user_id IN (?)
        ORDER BY played_at DESC`,
-      [gameType]
+      [gameType, targetUserIds]
     );
 
     const matchesByUser = new Map<number, any[]>();
+    const allConsideredMatchIds: string[] = [];
     for (const m of matches || []) {
       const uid = Number(m.user_id);
       if (!matchesByUser.has(uid)) matchesByUser.set(uid, []);
       const list = matchesByUser.get(uid)!;
-      if (list.length < 20) list.push(m); // Giới hạn 20 trận gần nhất mỗi người
+      if (list.length < 20) {
+        list.push(m);
+        allConsideredMatchIds.push(String(m.match_id));
+      }
+    }
+
+    const damageByMatchId = new Map<string, number>();
+    if (allConsideredMatchIds.length > 0) {
+      const [roundDmgRows]: any = await dbPool.query(
+        `SELECT match_id, COALESCE(SUM(damage_dealt), 0) AS total_dmg
+         FROM match_rounds
+         WHERE match_id IN (?)
+         GROUP BY match_id`,
+        [allConsideredMatchIds]
+      );
+      for (const row of roundDmgRows || []) {
+        damageByMatchId.set(String(row.match_id), Number(row.total_dmg || 0));
+      }
     }
 
     const leaderboard = (users || [])
@@ -1395,10 +1663,19 @@ router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Resp
           }
 
           const killsMatch = summaryStr.match(/(\d+)\s*Kills?/i);
-          if (killsMatch) totalKills += Number(killsMatch[1]);
+          const kdaMatch = summaryStr.match(/(\d+)\/(\d+)\/(\d+)\s*KDA/i);
+          if (killsMatch) {
+            totalKills += Number(killsMatch[1]);
+          } else if (kdaMatch) {
+            totalKills += Number(kdaMatch[1]);
+          }
 
           const dmgMatch = summaryStr.match(/(\d+)\s*DMG/i);
-          if (dmgMatch) totalDamage += Number(dmgMatch[1]);
+          if (dmgMatch) {
+            totalDamage += Number(dmgMatch[1]);
+          } else {
+            totalDamage += damageByMatchId.get(String(m.match_id)) || 0;
+          }
 
           if (m.cloud_video_url || m.local_video_filename) {
             highlightCount += 1;
@@ -1433,7 +1710,7 @@ router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Resp
           b.avgDamage - a.avgDamage
       );
 
-    res.json({ gameType, leaderboard });
+    res.json({ gameType, squadId: squadIdRaw, scope, leaderboard });
   } catch (error: any) {
     console.error('Lỗi /api/analyze/leaderboard:', error);
     res.status(500).json({ error: 'Không thể tổng hợp bảng xếp hạng lúc này.' });

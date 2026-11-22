@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { Check, Copy, Plus, SlidersHorizontal, Trash, X } from '@phosphor-icons/react';
+import { Check, CloudCheck, Copy, Plus, SlidersHorizontal, Trash, X } from '@phosphor-icons/react';
+import {
+  deleteCloudPreset,
+  fetchCloudPresets,
+  getAuthToken,
+  saveCloudPreset,
+} from '../services/localDb';
 
 export interface GameConfigPreset {
   id: string;
@@ -70,6 +76,9 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
     return DEFAULT_PRESETS;
   });
 
+  const [cloudSynced, setCloudSynced] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
   const [profileName, setProfileName] = useState('');
   const [dpi, setDpi] = useState('800');
   const [sensitivity, setSensitivity] = useState('0.35');
@@ -87,10 +96,43 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
     localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
   }, [presets]);
 
+  useEffect(() => {
+    if (!isOpen || !getAuthToken()) return;
+
+    const loadCloudPresets = async () => {
+      setSyncing(true);
+      try {
+        const res = await fetchCloudPresets();
+        const remoteList: GameConfigPreset[] = Array.isArray(res?.presets) ? res.presets : [];
+        if (remoteList.length > 0) {
+          setPresets((prev) => {
+            const byId = new Map<string, GameConfigPreset>();
+            remoteList.forEach((p) => byId.set(p.id, p));
+            prev.forEach((p) => {
+              if (!byId.has(p.id) && p.id.startsWith('preset-valo-') === false && p.id.startsWith('preset-pubg-') === false) {
+                byId.set(p.id, p);
+              }
+            });
+            return Array.from(byId.values()).sort(
+              (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+            );
+          });
+        }
+        setCloudSynced(true);
+      } catch {
+        setCloudSynced(false);
+      } finally {
+        setSyncing(false);
+      }
+    };
+
+    void loadCloudPresets();
+  }, [isOpen]);
+
   const isValo = gameTab === 'VALORANT';
   const filteredPresets = presets.filter((p) => p.gameType === gameTab);
 
-  const handleAddPreset = (e: React.FormEvent) => {
+  const handleAddPreset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileName.trim()) return;
 
@@ -113,6 +155,26 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
     setCrosshairCode('');
     setAudioSetup('');
     setNotes('');
+
+    if (getAuthToken()) {
+      try {
+        await saveCloudPreset(newItem);
+        setCloudSynced(true);
+      } catch {
+        setCloudSynced(false);
+      }
+    }
+  };
+
+  const handleDeletePreset = async (presetId: string) => {
+    setPresets((prev) => prev.filter((p) => p.id !== presetId));
+    if (getAuthToken()) {
+      try {
+        await deleteCloudPreset(presetId);
+      } catch {
+        // Bỏ qua lỗi xóa cloud tạm thời
+      }
+    }
   };
 
   const handleCopyText = async (id: string, text: string) => {
@@ -154,14 +216,28 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
                   <SlidersHorizontal size={16} weight="bold" aria-hidden="true" />
                 </div>
                 <div>
-                  <h2
-                    id="vault-modal-title"
-                    className="font-display text-base font-bold text-[#EEF2F6]"
-                  >
-                    Kho lưu trữ Sens, Crosshair &amp; Âm thanh cá nhân
-                  </h2>
+                  <div className="flex items-center gap-2">
+                    <h2
+                      id="vault-modal-title"
+                      className="font-display text-base font-bold text-[#EEF2F6]"
+                    >
+                      Kho lưu trữ Sens, Crosshair &amp; Âm thanh cá nhân
+                    </h2>
+                    <span
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border ${
+                        cloudSynced
+                          ? 'bg-[#10B981]/10 border-[#10B981]/40 text-[#10B981]'
+                          : 'bg-[#171D28] border-[#232B3B] text-[#94A3B8]'
+                      }`}
+                    >
+                      <CloudCheck size={11} weight="bold" aria-hidden="true" />
+                      <span>
+                        {syncing ? 'ĐANG ĐỒNG BỘ' : cloudSynced ? 'CLOUD SYNCED' : 'LOCAL CACHE'}
+                      </span>
+                    </span>
+                  </div>
                   <p className="text-xs text-[#94A3B8]">
-                    Lưu sẵn thông số chuột và mã tâm ngắm để sao chép nhanh 1 chạm khi ngồi máy mới
+                    Đồng bộ theo tài khoản để sao chép nhanh 1 chạm khi ngồi máy mới
                   </p>
                 </div>
               </div>
@@ -216,7 +292,7 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-12 gap-5 p-6 overflow-y-auto tactical-scrollbar">
               {/* Form them cau hinh moi */}
               <form
-                onSubmit={handleAddPreset}
+                onSubmit={(e) => void handleAddPreset(e)}
                 className="md:col-span-5 space-y-3 rounded-[4px] border border-[#232B3B] bg-[#0A0D12] p-4"
               >
                 <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-[#EEF2F6] flex items-center gap-1.5">
@@ -317,7 +393,7 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
                       : 'bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12]'
                   }`}
                 >
-                  Lưu cấu hình vào kho
+                  Lưu cấu hình &amp; Đồng bộ Cloud
                 </button>
               </form>
 
@@ -348,9 +424,7 @@ export const SettingsVaultModal: React.FC<SettingsVaultModalProps> = ({
                           <button
                             type="button"
                             aria-label={`Xóa cấu hình ${item.profileName}`}
-                            onClick={() =>
-                              setPresets((prev) => prev.filter((p) => p.id !== item.id))
-                            }
+                            onClick={() => void handleDeletePreset(item.id)}
                             className="inline-flex items-center gap-1 rounded-[2px] px-2 py-1 text-[11px] text-[#64748B] hover:text-[#F43F5E] hover:bg-[#171D28] transition duration-150"
                           >
                             <Trash size={13} weight="bold" aria-hidden="true" />

@@ -7,5 +7,6 @@ uploads/
 # File chứa mật khẩu & API Key bảo mật
 .env
 .env.*
+!.env.example
 *.log
 git.txt

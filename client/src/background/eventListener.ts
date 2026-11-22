@@ -145,6 +145,7 @@ class GameEventListener {
 
       case 'kill':
         this.awaitingFirstRoundStart = false;
+        videoRecorder.captureHighlightMoment();
         this.timelineEvents.push({
           timestampMs: relativeMs,
           round: this.currentRound,

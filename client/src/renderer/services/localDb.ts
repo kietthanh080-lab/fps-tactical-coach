@@ -2,6 +2,9 @@ export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
 const TOKEN_KEY = 'tactical_replay_auth_token';
 const VIDEOS_MAP_KEY = 'tactical_replay_local_videos';
+const CAPTURE_MODE_KEY = 'tactical_replay_capture_mode';
+
+export type CaptureMode = 'FULL_MATCH' | 'HIGHLIGHT_CLIPS';
 
 export interface LocalVideoRecord {
   matchId: string;
@@ -24,6 +27,27 @@ export interface AuthProvidersStatus {
   riotRsoReady: boolean;
   riotApiReady: boolean;
   steamReady: boolean;
+}
+
+export interface SquadInfo {
+  id: number;
+  code: string;
+  name: string;
+  ownerUserId: number;
+  memberCount: number;
+}
+
+export function getCaptureMode(): CaptureMode {
+  try {
+    const val = localStorage.getItem(CAPTURE_MODE_KEY);
+    return val === 'HIGHLIGHT_CLIPS' ? 'HIGHLIGHT_CLIPS' : 'FULL_MATCH';
+  } catch {
+    return 'FULL_MATCH';
+  }
+}
+
+export function setCaptureMode(mode: CaptureMode): void {
+  localStorage.setItem(CAPTURE_MODE_KEY, mode);
 }
 
 export function getAuthToken(): string | null {
@@ -142,6 +166,44 @@ export async function unlinkRiotAccount(): Promise<{ token: string; message: str
   });
 }
 
+export async function updatePubgProfile(pubgPlayerName: string): Promise<{
+  pubg_player_name: string;
+  pubg_account_id: string | null;
+  message: string;
+}> {
+  return authFetch('/auth/pubg-profile', {
+    method: 'PUT',
+    body: JSON.stringify({ pubgPlayerName }),
+  });
+}
+
+export async function fetchCloudPresets() {
+  return authFetch('/auth/presets');
+}
+
+export async function saveCloudPreset(preset: {
+  id: string;
+  gameType: 'VALORANT' | 'PUBG';
+  profileName: string;
+  dpi: number;
+  sensitivity: number;
+  adsOrScopedSens: string;
+  crosshairCode: string;
+  audioSetup: string;
+  notes: string;
+}) {
+  return authFetch('/auth/presets', {
+    method: 'POST',
+    body: JSON.stringify(preset),
+  });
+}
+
+export async function deleteCloudPreset(presetId: string) {
+  return authFetch(`/auth/presets/${encodeURIComponent(presetId)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function fetchMyVideos() {
   return authFetch('/auth/my-videos');
 }
@@ -218,6 +280,40 @@ export async function uploadMatchHighlight(
   fileBlob: Blob,
   fileName: string
 ): Promise<{ matchId: string; cloudVideoUrl: string; fileName?: string }> {
+  // 1. Thử xin Presigned URL (Cloudflare R2 / S3) để upload trực tiếp vượt giới hạn 4.5MB của Vercel
+  const presignData = await authFetch('/analyze/highlight/presign', {
+    method: 'POST',
+    body: JSON.stringify({
+      matchId,
+      fileName,
+      contentType: fileBlob.type || 'video/mp4',
+    }),
+  }).catch(() => null);
+
+  if (presignData?.mode === 's3-presigned' && presignData.presignedUrl && presignData.publicUrl) {
+    const putRes = await fetch(presignData.presignedUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': fileBlob.type || 'video/mp4',
+      },
+      body: fileBlob,
+    });
+
+    if (!putRes.ok) {
+      throw new Error(`Upload Cloud Storage thất bại (${putRes.status}).`);
+    }
+
+    return authFetch('/analyze/highlight/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        matchId,
+        cloudVideoUrl: presignData.publicUrl,
+        localVideoFilename: fileName,
+      }),
+    });
+  }
+
+  // 2. Fallback: Upload trực tiếp qua Express multipart (Docker / VPS / Local)
   const token = getAuthToken();
   const formData = new FormData();
   formData.append('matchId', matchId);
@@ -253,6 +349,37 @@ export async function askAiCoach(payload: {
   });
 }
 
-export async function fetchLeaderboard(gameType: 'VALORANT' | 'PUBG') {
-  return authFetch(`/analyze/leaderboard?gameType=${encodeURIComponent(gameType)}`);
+export async function fetchSquads(): Promise<{ squads: SquadInfo[] }> {
+  return authFetch('/analyze/squads');
+}
+
+export async function createSquad(name: string): Promise<{ squad: SquadInfo }> {
+  return authFetch('/analyze/squads', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function joinSquad(code: string): Promise<{ squad: SquadInfo }> {
+  return authFetch('/analyze/squads/join', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function leaveSquad(squadId: number): Promise<{ left: boolean }> {
+  return authFetch(`/analyze/squads/${squadId}/leave`, {
+    method: 'POST',
+  });
+}
+
+export async function fetchLeaderboard(
+  gameType: 'VALORANT' | 'PUBG',
+  squadId?: number | null
+) {
+  const params = new URLSearchParams({ gameType });
+  if (squadId && squadId > 0) {
+    params.set('squadId', String(squadId));
+  }
+  return authFetch(`/analyze/leaderboard?${params.toString()}`);
 }

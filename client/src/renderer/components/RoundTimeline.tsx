@@ -14,6 +14,8 @@ export interface WeaponUsageStatUI {
 
 export interface AnalyzedRoundUI {
   roundNumber: number;
+  startTimestampMs?: number;
+  endTimestampMs?: number;
   kills: number;
   deaths: number;
   assists: number;
@@ -24,6 +26,12 @@ export interface AnalyzedRoundUI {
   weaponStats?: WeaponUsageStatUI[];
   strengths: string[];
   mistakes: string[];
+  events?: Array<{
+    timestampMs: number;
+    round: number;
+    type: string;
+    payload?: Record<string, unknown>;
+  }>;
   timestampSec?: number;
   startTimeSec?: number;
 }

@@ -1,5 +1,5 @@
 ---
-version: 1.3.0
+version: 1.4.0
 name: Tactical Telemetry HUD
 description: High-contrast tactical eSports replay and post-match coaching cockpit for VALORANT and PUBG.
 colors:
