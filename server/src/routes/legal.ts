@@ -259,6 +259,15 @@ const layout = (title: string, bodyHtml: string, extraHead = '') => `<!DOCTYPE h
 </body>
 </html>`;
 
+// 0. GET /riot.txt — Riot Developer Portal domain ownership verification
+router.get('/riot.txt', (_req: Request, res: Response) => {
+  const verificationToken = (
+    process.env.RIOT_VERIFY_TOKEN || '4250f227-8b94-405d-99ba-8546497b81d1'
+  ).trim();
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send(verificationToken);
+});
+
 // 1. GET / — Public Overview, Visual UX Flow & Policy Showcase for Riot Reviewers
 router.get('/', (_req: Request, res: Response) => {
   res.send(
