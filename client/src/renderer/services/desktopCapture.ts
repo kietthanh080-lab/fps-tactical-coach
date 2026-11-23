@@ -1,6 +1,7 @@
 import {
   fetchMatchDetail,
   getLocalVideoByMatchId,
+  LocalClipItem,
   saveLocalVideoRecord,
   uploadMatchHighlight,
 } from './localDb';
@@ -16,6 +17,10 @@ export interface DesktopCaptureStatus {
   preferredScreenId?: string | null;
   hotkeyRegistered: boolean;
   hotkey: string;
+  micEnabled?: boolean;
+  beepEnabled?: boolean;
+  maxStorageGb?: number;
+  allowedHotkeys?: string[];
   shouldRecord: boolean;
 }
 
@@ -31,9 +36,71 @@ export interface PromotedHighlightClip {
   fileName: string;
   durationSec: number;
   recordedAt: string;
+  source?: 'KILL' | 'F9';
+}
+
+export interface StorageStatsItem {
+  name: string;
+  filePath: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  attachedMatchId: string | null;
+}
+
+export interface StorageStats {
+  folderPath: string;
+  totalBytes: number;
+  fileCount: number;
+  maxStorageGb: number;
+  files: StorageStatsItem[];
 }
 
 const SEGMENT_DURATION_MS = 25000;
+
+export function playHighlightBeep(): void {
+  try {
+    const AudioCtx =
+      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const playTone = (freq: number, start: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.08, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur);
+    };
+
+    playTone(880, now, 0.08);
+    playTone(1320, now + 0.09, 0.11);
+    window.setTimeout(() => {
+      void ctx.close().catch(() => {});
+    }, 450);
+  } catch {
+    // Bỏ qua nếu thiết bị chặn AudioContext
+  }
+}
+
+function pickSupportedMimeType(): string {
+  const candidates = [
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+  for (const mime of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mime)) {
+      return mime;
+    }
+  }
+  return '';
+}
 
 async function sampleStreamFrame(
   stream: MediaStream
@@ -68,22 +135,10 @@ async function sampleStreamFrame(
   }
 }
 
-function pickSupportedMimeType(): string {
-  const candidates = [
-    'video/webm;codecs=vp8,opus',
-    'video/webm;codecs=vp8',
-    'video/webm',
-  ];
-  for (const mime of candidates) {
-    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mime)) {
-      return mime;
-    }
-  }
-  return '';
-}
-
 class DesktopRingRecorder {
   private stream: MediaStream | null = null;
+  private micStream: MediaStream | null = null;
+  private mixAudioCtx: AudioContext | null = null;
   private recorder: MediaRecorder | null = null;
   private rotateTimer: number | null = null;
   private blackCheckTimer: number | null = null;
@@ -92,6 +147,8 @@ class DesktopRingRecorder {
   private currentGame: 'VALORANT' | 'PUBG' = 'PUBG';
   private currentQuality: '720p30' | '1080p60' = '720p30';
   private currentScreenId: string | null = null;
+  private currentMicEnabled = false;
+  private currentBeepEnabled = true;
   private active = false;
   private flushMode: 'temp' | 'f9' | 'discard' = 'temp';
   private onF9SavedCb: ((clip: PromotedHighlightClip) => void) | null = null;
@@ -112,16 +169,20 @@ class DesktopRingRecorder {
   public async ensureState(status: DesktopCaptureStatus): Promise<void> {
     const nextQuality = status.captureQuality === '1080p60' ? '1080p60' : '720p30';
     const nextScreenId = status.preferredScreenId || null;
+    const nextMic = Boolean(status.micEnabled);
+    this.currentBeepEnabled = status.beepEnabled !== false;
 
     if (status.shouldRecord && status.activeGame) {
       const configChanged =
         this.currentGame !== status.activeGame ||
         this.currentQuality !== nextQuality ||
-        this.currentScreenId !== nextScreenId;
+        this.currentScreenId !== nextScreenId ||
+        this.currentMicEnabled !== nextMic;
 
       if (!this.active || configChanged) {
         this.currentQuality = nextQuality;
         this.currentScreenId = nextScreenId;
+        this.currentMicEnabled = nextMic;
         await this.start(status.activeGame);
       }
       return;
@@ -129,12 +190,16 @@ class DesktopRingRecorder {
 
     this.currentQuality = nextQuality;
     this.currentScreenId = nextScreenId;
+    this.currentMicEnabled = nextMic;
     if (this.active) {
       await this.stop();
     }
   }
 
-  private async acquireScreenStream(quality: '720p30' | '1080p60'): Promise<MediaStream | null> {
+  private async acquireScreenStream(
+    quality: '720p30' | '1080p60',
+    includeMic: boolean
+  ): Promise<MediaStream | null> {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.getScreenSourceId) return null;
     const source = await electronAPI.getScreenSourceId();
@@ -151,8 +216,9 @@ class DesktopRingRecorder {
       },
     } as any;
 
+    let baseStream: MediaStream;
     try {
-      return await navigator.mediaDevices.getUserMedia({
+      baseStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           mandatory: {
             chromeMediaSource: 'desktop',
@@ -162,11 +228,34 @@ class DesktopRingRecorder {
         video: videoConstraint,
       });
     } catch {
-      // Dự phòng nếu driver âm thanh desktop không cho loopback capture
-      return await navigator.mediaDevices.getUserMedia({
+      baseStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: videoConstraint,
       });
+    }
+
+    if (!includeMic) return baseStream;
+
+    try {
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      this.micStream = mic;
+
+      const desktopAudioTracks = baseStream.getAudioTracks();
+      const micAudioTracks = mic.getAudioTracks();
+      if (micAudioTracks.length === 0) return baseStream;
+
+      if (desktopAudioTracks.length === 0) {
+        return new MediaStream([...baseStream.getVideoTracks(), ...micAudioTracks]);
+      }
+
+      const audioCtx = new AudioContext();
+      this.mixAudioCtx = audioCtx;
+      const dest = audioCtx.createMediaStreamDestination();
+      audioCtx.createMediaStreamSource(new MediaStream(desktopAudioTracks)).connect(dest);
+      audioCtx.createMediaStreamSource(new MediaStream(micAudioTracks)).connect(dest);
+      return new MediaStream([...baseStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+    } catch {
+      return baseStream;
     }
   }
 
@@ -180,7 +269,7 @@ class DesktopRingRecorder {
       const res = await sampleStreamFrame(this.stream);
       return { ok: !res.isBlack && res.width > 0, ...res };
     }
-    const testStream = await this.acquireScreenStream(this.currentQuality).catch(() => null);
+    const testStream = await this.acquireScreenStream(this.currentQuality, false).catch(() => null);
     if (!testStream) {
       return { ok: false, isBlack: false, width: 0, height: 0 };
     }
@@ -194,7 +283,10 @@ class DesktopRingRecorder {
 
   public async start(gameType: 'VALORANT' | 'PUBG'): Promise<void> {
     await this.stop();
-    const stream = await this.acquireScreenStream(this.currentQuality).catch(() => null);
+    const stream = await this.acquireScreenStream(
+      this.currentQuality,
+      this.currentMicEnabled
+    ).catch(() => null);
     if (!stream) return;
 
     this.stream = stream;
@@ -285,13 +377,17 @@ class DesktopRingRecorder {
         endMs,
         bytes,
       });
-      if (res?.saved && this.onF9SavedCb) {
-        this.onF9SavedCb({
-          filePath: res.filePath,
-          fileName: res.fileName,
-          durationSec: res.durationSec,
-          recordedAt: res.recordedAt,
-        });
+      if (res?.saved) {
+        if (this.currentBeepEnabled) playHighlightBeep();
+        if (this.onF9SavedCb) {
+          this.onF9SavedCb({
+            filePath: res.filePath,
+            fileName: res.fileName,
+            durationSec: res.durationSec,
+            recordedAt: res.recordedAt,
+            source: 'F9',
+          });
+        }
       }
       return;
     }
@@ -315,7 +411,6 @@ class DesktopRingRecorder {
       return;
     }
 
-    // Nếu không đang quay (hoặc người dùng nhấn F9 ngay khi vừa thoát trận), vẫn kiểm tra promote đoạn gần nhất
     const electronAPI = (window as any).electronAPI;
     if (electronAPI?.promoteF9Highlight) {
       const res = await electronAPI.promoteF9Highlight({
@@ -323,13 +418,17 @@ class DesktopRingRecorder {
         startMs: Date.now(),
         endMs: Date.now(),
       });
-      if (res?.saved && this.onF9SavedCb) {
-        this.onF9SavedCb({
-          filePath: res.filePath,
-          fileName: res.fileName,
-          durationSec: res.durationSec,
-          recordedAt: res.recordedAt,
-        });
+      if (res?.saved) {
+        if (this.currentBeepEnabled) playHighlightBeep();
+        if (this.onF9SavedCb) {
+          this.onF9SavedCb({
+            filePath: res.filePath,
+            fileName: res.fileName,
+            durationSec: res.durationSec,
+            recordedAt: res.recordedAt,
+            source: 'F9',
+          });
+        }
       }
     }
   }
@@ -361,6 +460,18 @@ class DesktopRingRecorder {
       }
       this.stream = null;
     }
+
+    if (this.micStream) {
+      for (const track of this.micStream.getTracks()) {
+        track.stop();
+      }
+      this.micStream = null;
+    }
+
+    if (this.mixAudioCtx) {
+      void this.mixAudioCtx.close().catch(() => {});
+      this.mixAudioCtx = null;
+    }
   }
 }
 
@@ -373,18 +484,22 @@ export async function matchDesktopHighlightsForMatches(
     played_at: string;
     duration_sec: number;
     cloud_video_url?: string | null;
+    is_pinned?: boolean;
   }>
 ): Promise<string[]> {
   const electronAPI = (window as any).electronAPI;
   if (!electronAPI?.matchKillSegments || matches.length === 0) return [];
 
+  const pinnedMatchIds = matches.filter((m) => m.is_pinned).map((m) => m.match_id);
   const attachedMatchIds: string[] = [];
   const recentWindowMs = Date.now() - 4 * 60 * 60 * 1000;
 
-  for (const m of matches.slice(0, 5)) {
+  for (const m of matches.slice(0, 6)) {
     const matchStartMs = new Date(m.played_at).getTime();
     if (!Number.isFinite(matchStartMs) || matchStartMs < recentWindowMs) continue;
-    if (getLocalVideoByMatchId(m.match_id) || m.cloud_video_url) continue;
+
+    const existing = getLocalVideoByMatchId(m.match_id);
+    if (existing && (existing.clips?.length || existing.filePath) && m.cloud_video_url) continue;
 
     try {
       const detail = await fetchMatchDetail(m.match_id);
@@ -407,31 +522,45 @@ export async function matchDesktopHighlightsForMatches(
         matchStartMs,
         matchEndMs,
         killEpochsMs,
+        pinnedMatchIds,
       });
 
       const clips: PromotedHighlightClip[] = Array.isArray(res?.clips) ? res.clips : [];
       if (clips.length === 0) continue;
 
+      const existingCount = existing?.clips?.length || (existing?.filePath ? 1 : 0);
       const primary = clips[clips.length - 1];
-      saveLocalVideoRecord({
-        matchId: m.match_id,
-        gameType: m.game_type,
-        filePath: primary.filePath,
-        fileName: primary.fileName,
-        durationSec: primary.durationSec,
-        recordedAt: primary.recordedAt,
-      });
-      attachedMatchIds.push(m.match_id);
+      const clipItems: LocalClipItem[] = clips.map((c) => ({
+        filePath: c.filePath,
+        fileName: c.fileName,
+        durationSec: c.durationSec,
+        recordedAt: c.recordedAt,
+        source: c.source,
+      }));
 
-      // Thử đồng bộ lên server/cloud nếu có file URL hợp lệ
-      try {
-        const fileRes = await fetch(`file:///${primary.filePath.replace(/\\/g, '/')}`);
-        const blob = await fileRes.blob();
-        if (blob.size > 0 && blob.size <= 4 * 1024 * 1024) {
-          await uploadMatchHighlight(m.match_id, blob, primary.fileName);
+      if (!existing || clips.length > existingCount) {
+        saveLocalVideoRecord({
+          matchId: m.match_id,
+          gameType: m.game_type,
+          filePath: primary.filePath,
+          fileName: primary.fileName,
+          durationSec: primary.durationSec,
+          recordedAt: primary.recordedAt,
+          clips: clipItems,
+        });
+        attachedMatchIds.push(m.match_id);
+      }
+
+      if (!m.cloud_video_url) {
+        try {
+          const fileRes = await fetch(`file:///${primary.filePath.replace(/\\/g, '/')}`);
+          const blob = await fileRes.blob();
+          if (blob.size > 0) {
+            await uploadMatchHighlight(m.match_id, blob, primary.fileName);
+          }
+        } catch {
+          // Giữ clip local ổn định ngay cả khi vượt 4.5MB mà chưa bật Cloudflare R2
         }
-      } catch {
-        // Giữ clip phát local ổn định ngay cả khi quá 4MB mà chưa cấu hình S3/R2
       }
     } catch {
       // Bỏ qua lỗi từng trận đơn lẻ

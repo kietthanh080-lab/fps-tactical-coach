@@ -6,6 +6,14 @@ const CAPTURE_MODE_KEY = 'tactical_replay_capture_mode';
 
 export type CaptureMode = 'FULL_MATCH' | 'HIGHLIGHT_CLIPS';
 
+export interface LocalClipItem {
+  filePath: string;
+  fileName: string;
+  durationSec: number;
+  recordedAt: string;
+  source?: 'KILL' | 'F9';
+}
+
 export interface LocalVideoRecord {
   matchId: string;
   gameType: 'VALORANT' | 'PUBG';
@@ -14,6 +22,31 @@ export interface LocalVideoRecord {
   fileName: string;
   durationSec: number;
   recordedAt: string;
+  clips?: LocalClipItem[];
+}
+
+export interface PubgMapPoint {
+  x: number;
+  y: number;
+  tMs: number;
+  phase?: number;
+  label?: string;
+}
+
+export interface PubgSafeZoneCircle {
+  phase: number;
+  x: number;
+  y: number;
+  radius: number;
+}
+
+export interface PubgMapTelemetrySummary {
+  mapRawName: string;
+  mapSizeCm: number;
+  path: PubgMapPoint[];
+  kills: PubgMapPoint[];
+  deaths: PubgMapPoint[];
+  safeZones: PubgSafeZoneCircle[];
 }
 
 export interface TimelineEvent {
@@ -314,6 +347,12 @@ export async function uploadMatchHighlight(
   }
 
   // 2. Fallback: Upload trực tiếp qua Express multipart (Docker / VPS / Local)
+  if (API_BASE_URL.includes('.vercel.app') && fileBlob.size > 4.2 * 1024 * 1024) {
+    throw new Error(
+      'Clip vượt quá 4.5MB nên server Vercel miễn phí chưa thể nhận trực tiếp (hãy cấu hình 6 biến S3_* Cloudflare R2 trên Vercel để upload không giới hạn).'
+    );
+  }
+
   const token = getAuthToken();
   const formData = new FormData();
   formData.append('matchId', matchId);
@@ -382,4 +421,30 @@ export async function fetchLeaderboard(
     params.set('squadId', String(squadId));
   }
   return authFetch(`/analyze/leaderboard?${params.toString()}`);
+}
+
+export async function togglePinMatch(
+  matchId: string,
+  pinned: boolean
+): Promise<{ matchId: string; isPinned: boolean; message: string }> {
+  return authFetch(`/analyze/match/${encodeURIComponent(matchId)}/pin`, {
+    method: 'POST',
+    body: JSON.stringify({ pinned }),
+  });
+}
+
+export async function fetchStorageStatus(): Promise<{
+  s3Configured: boolean;
+  mode: 's3-presigned' | 'direct-server';
+  maxDirectUploadMb: number;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/analyze/storage-status`);
+    if (!res.ok) {
+      return { s3Configured: false, mode: 'direct-server', maxDirectUploadMb: 4.5 };
+    }
+    return res.json();
+  } catch {
+    return { s3Configured: false, mode: 'direct-server', maxDirectUploadMb: 4.5 };
+  }
 }

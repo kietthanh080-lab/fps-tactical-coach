@@ -15,16 +15,31 @@ import {
 import { AnalyzedRoundUI, RoundTimeline } from './RoundTimeline';
 import { uploadMatchHighlight } from '../services/localDb';
 
+import { Camera, FilmStrip, FolderOpen } from '@phosphor-icons/react';
+
+export interface ReplayClipItem {
+  id?: string;
+  filePath: string;
+  fileName: string;
+  fileSizeMb?: number;
+  durationSec?: number;
+  source?: 'KILL' | 'F9';
+  recordedAt?: string;
+  createdAt?: string;
+}
+
 interface ReplayPlayerProps {
   gameType: 'VALORANT' | 'PUBG';
   matchId: string | null;
   hasSelectedMatch: boolean;
   videoSrc: string | null;
+  clips?: ReplayClipItem[];
   matchTitle: string;
   rounds: AnalyzedRoundUI[];
   selectedRound: number;
   onSelectRound: (roundNumber: number) => void;
   onHighlightSaved?: (cloudUrl: string) => void;
+  onOpenHighlightsFolder?: () => void;
 }
 
 type DrawTool = 'arrow' | 'circle' | 'pen';
@@ -72,11 +87,13 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   matchId,
   hasSelectedMatch,
   videoSrc,
+  clips,
   matchTitle,
   rounds,
   selectedRound,
   onSelectRound,
   onHighlightSaved,
+  onOpenHighlightsFolder,
 }) => {
   const isValo = gameType === 'VALORANT';
 
@@ -88,6 +105,8 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const [localPreviewSrc, setLocalPreviewSrc] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [selectedClipIdx, setSelectedClipIdx] = useState<number>(0);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'downloaded' | 'error'>('idle');
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -109,7 +128,28 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   shapesRef.current = shapes;
   currentShapeRef.current = currentShape;
 
-  const activeVideoUrl = localPreviewSrc || videoSrc;
+  const clipList = clips || [];
+  const safeClipIdx = selectedClipIdx < clipList.length ? selectedClipIdx : 0;
+  const activeClip = clipList[safeClipIdx] || null;
+  const clipVideoUrl = activeClip?.filePath
+    ? activeClip.filePath.startsWith('file://')
+      ? activeClip.filePath
+      : `file:///${activeClip.filePath.replace(/\\/g, '/')}`
+    : null;
+  const activeVideoUrl =
+    localPreviewSrc || (clipList.length > 1 ? clipVideoUrl : null) || videoSrc || clipVideoUrl;
+
+  const handleSelectClip = (idx: number) => {
+    setSelectedClipIdx(idx);
+    setLocalPreviewSrc(null);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -122,6 +162,8 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   useEffect(() => {
     setLocalPreviewSrc(null);
     setUploadError(null);
+    setSelectedClipIdx(0);
+    setCopyStatus('idle');
     setCurrentShape(null);
     setIsPlaying(false);
     setCurrentTime(0);
@@ -251,6 +293,109 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     observer.observe(container);
     return () => observer.disconnect();
   }, [redrawCanvas, activeVideoUrl]);
+
+  const handleCopyScreenshot = useCallback(async () => {
+    const container = containerRef.current;
+    const drawCanvas = canvasRef.current;
+    const videoEl = videoRef.current;
+
+    const exportWidth =
+      videoEl && videoEl.videoWidth > 0
+        ? videoEl.videoWidth
+        : drawCanvas?.width || container?.clientWidth || 1280;
+    const exportHeight =
+      videoEl && videoEl.videoHeight > 0
+        ? videoEl.videoHeight
+        : drawCanvas?.height || container?.clientHeight || 720;
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = exportWidth;
+    outCanvas.height = exportHeight;
+    const outCtx = outCanvas.getContext('2d');
+    if (!outCtx) return;
+
+    outCtx.fillStyle = '#0A0D12';
+    outCtx.fillRect(0, 0, exportWidth, exportHeight);
+
+    if (videoEl && videoEl.readyState >= 2) {
+      try {
+        outCtx.drawImage(videoEl, 0, 0, exportWidth, exportHeight);
+      } catch {
+        // Ignore cross-origin draw failures cleanly
+      }
+    }
+
+    if (drawCanvas && drawCanvas.width > 0 && drawCanvas.height > 0) {
+      outCtx.drawImage(drawCanvas, 0, 0, exportWidth, exportHeight);
+    }
+
+    outCtx.fillStyle = 'rgba(10, 13, 18, 0.78)';
+    outCtx.fillRect(12, exportHeight - 36, 320, 24);
+    outCtx.fillStyle = '#EEF2F6';
+    outCtx.font = 'bold 12px sans-serif';
+    outCtx.fillText(
+      `FPS Coach | ${matchTitle || gameType} | ${isValo ? `R${selectedRound}` : `P${selectedRound}`}`.slice(0, 46),
+      20,
+      exportHeight - 20
+    );
+
+    const exportBlob = (canvasToSave: HTMLCanvasElement): Promise<Blob | null> =>
+      new Promise((resolve) => {
+        try {
+          canvasToSave.toBlob((blob) => resolve(blob), 'image/png');
+        } catch {
+          resolve(null);
+        }
+      });
+
+    let pngBlob = await exportBlob(outCanvas);
+    if (!pngBlob) {
+      // Fallback when remote video lacks CORS headers: still export tactical drawings cleanly
+      const fallbackCanvas = document.createElement('canvas');
+      fallbackCanvas.width = exportWidth;
+      fallbackCanvas.height = exportHeight;
+      const fbCtx = fallbackCanvas.getContext('2d');
+      if (fbCtx) {
+        fbCtx.fillStyle = '#111620';
+        fbCtx.fillRect(0, 0, exportWidth, exportHeight);
+        if (drawCanvas && drawCanvas.width > 0 && drawCanvas.height > 0) {
+          fbCtx.drawImage(drawCanvas, 0, 0, exportWidth, exportHeight);
+        }
+        fbCtx.fillStyle = '#94A3B8';
+        fbCtx.font = '13px sans-serif';
+        fbCtx.fillText('So do Telestrator (Video cloud khong cho phep chup frame truc tiep)', 20, 32);
+        pngBlob = await exportBlob(fallbackCanvas);
+      }
+    }
+
+    if (!pngBlob) {
+      setCopyStatus('error');
+      setTimeout(() => setCopyStatus('idle'), 2500);
+      return;
+    }
+
+    try {
+      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+        setCopyStatus('copied');
+        setTimeout(() => setCopyStatus('idle'), 2500);
+        return;
+      }
+    } catch {
+      // Fallback to downloading PNG when clipboard write is restricted
+    }
+
+    const blobUrl = URL.createObjectURL(pngBlob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `tactical-${matchId || 'clip'}-r${selectedRound}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+    setCopyStatus('downloaded');
+    setTimeout(() => setCopyStatus('idle'), 2500);
+  }, [gameType, isValo, matchId, matchTitle, selectedRound]);
 
   const seekTo = useCallback((targetSec: number) => {
     const video = videoRef.current;
@@ -558,6 +703,46 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               </>
             )}
 
+            {onOpenHighlightsFolder && (
+              <button
+                type="button"
+                onClick={onOpenHighlightsFolder}
+                title="Mở thư mục lưu clip highlight trên máy"
+                className="inline-flex items-center gap-1.5 rounded-[2px] border border-[#232B3B] bg-[#171D28] px-2.5 py-1.5 text-xs font-medium text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B] transition duration-150"
+              >
+                <FolderOpen size={14} weight="bold" aria-hidden="true" />
+                <span>Mở thư mục</span>
+              </button>
+            )}
+
+            {activeVideoUrl && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleCopyScreenshot();
+                }}
+                title="Chụp frame video kèm nét vẽ Telestrator vào clipboard để dán Discord"
+                className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1.5 text-xs font-medium transition duration-150 ${
+                  copyStatus === 'copied' || copyStatus === 'downloaded'
+                    ? 'bg-[#10B981]/15 border-[#10B981] text-[#10B981]'
+                    : copyStatus === 'error'
+                      ? 'bg-[#F43F5E]/15 border-[#F43F5E] text-[#F43F5E]'
+                      : 'bg-[#171D28] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B]'
+                }`}
+              >
+                <Camera size={14} weight="bold" aria-hidden="true" />
+                <span>
+                  {copyStatus === 'copied'
+                    ? 'Đã copy ảnh'
+                    : copyStatus === 'downloaded'
+                      ? 'Đã tải PNG'
+                      : copyStatus === 'error'
+                        ? 'Lỗi chụp ảnh'
+                        : 'Copy ảnh'}
+                </span>
+              </button>
+            )}
+
             {activeVideoUrl && (
               <button
                 type="button"
@@ -581,6 +766,50 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
             )}
           </div>
         </div>
+
+        {/* Multi-Clip Gallery trong cung 1 tran */}
+        {clipList.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-[#94A3B8] mr-1">
+                <FilmStrip size={14} weight="bold" aria-hidden="true" />
+                <span>{clipList.length} Clip trong trận:</span>
+              </span>
+              {clipList.map((clip, idx) => {
+                const isSelected = safeClipIdx === idx && !localPreviewSrc;
+                return (
+                  <button
+                    key={clip.id || `${clip.fileName}-${idx}`}
+                    type="button"
+                    onClick={() => handleSelectClip(idx)}
+                    className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1 text-[11px] font-bold transition duration-150 ${
+                      isSelected
+                        ? isValo
+                          ? 'bg-[#FF4655] border-[#FF4655] text-[#EEF2F6]'
+                          : 'bg-[#E59A23] border-[#E59A23] text-[#0A0D12]'
+                        : 'bg-[#171D28] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B]'
+                    }`}
+                  >
+                    <span>
+                      {clip.source === 'KILL' ? 'Kill' : 'Phím tắt'} #{idx + 1}
+                    </span>
+                    {typeof clip.durationSec === 'number' && clip.durationSec > 0 && (
+                      <span className="font-mono opacity-80">{clip.durationSec}s</span>
+                    )}
+                    {typeof clip.fileSizeMb === 'number' && clip.fileSizeMb > 0 && (
+                      <span className="font-mono opacity-70">{clip.fileSizeMb.toFixed(1)}MB</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {activeClip && (
+              <span className="text-[11px] font-mono text-[#64748B] truncate max-w-[220px]" title={activeClip.fileName}>
+                {activeClip.fileName}
+              </span>
+            )}
+          </div>
+        )}
 
         {uploadError && (
           <div className="rounded-[2px] border border-[#E59A23]/40 bg-[#E59A23]/10 px-3 py-2 text-xs text-[#E59A23]">

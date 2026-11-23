@@ -902,6 +902,7 @@ router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Respon
   const userId = req.user?.userId;
 
   try {
+    await ensureFeatureTables();
     const [users] = await dbPool.query<RowDataPacket[]>(
       `SELECT id,
               riot_game_name,
@@ -918,10 +919,11 @@ router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Respon
 
     const [matches] = await dbPool.query<RowDataPacket[]>(
       `SELECT match_id, game_type, map_name, game_mode, match_result,
-              score_summary, local_video_filename, cloud_video_url, duration_sec, played_at
+              score_summary, local_video_filename, cloud_video_url, duration_sec,
+              COALESCE(is_pinned, 0) AS is_pinned, played_at
        FROM matches
        WHERE user_id = ?
-       ORDER BY played_at DESC`,
+       ORDER BY is_pinned DESC, played_at DESC`,
       [userId]
     );
 
@@ -933,7 +935,10 @@ router.get('/my-videos', authenticateToken, async (req: AuthRequest, res: Respon
             has_riot_linked: Boolean(rawProfile.has_riot_linked),
           }
         : null,
-      videos: matches,
+      videos: matches.map((m) => ({
+        ...m,
+        is_pinned: Boolean(m.is_pinned),
+      })),
     });
   } catch (error) {
     console.error('Lỗi lấy danh sách video:', error);

@@ -19,6 +19,9 @@ export interface MatchReportUI {
   coachCommentary: string;
 }
 
+import type { PubgMapTelemetrySummary } from '../services/localDb';
+import { PubgMinimapPanel } from './PubgMinimapPanel';
+
 interface TacticalReportProps {
   gameType: 'VALORANT' | 'PUBG';
   matchId?: string | null;
@@ -26,6 +29,7 @@ interface TacticalReportProps {
   activeRound: AnalyzedRoundUI | undefined;
   rounds?: AnalyzedRoundUI[];
   report: MatchReportUI | null;
+  mapTelemetry?: PubgMapTelemetrySummary | null;
 }
 
 interface ChatMessage {
@@ -66,8 +70,10 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   activeRound,
   rounds = [],
   report,
+  mapTelemetry = null,
 }) => {
   const [activeTab, setActiveTab] = useState<'ROUND' | 'MATCH' | 'CHAT'>('ROUND');
+  const [showRoundMinimap, setShowRoundMinimap] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [questionInput, setQuestionInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
@@ -375,6 +381,28 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 )}
               </div>
 
+              {!isValo && (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRoundMinimap((prev) => !prev)}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-[2px] bg-[#0A0D12] hover:bg-[#171D28] border border-[#232B3B] text-xs font-mono font-bold text-[#E59A23] transition duration-150"
+                  >
+                    <span>SƠ ĐỒ 2D BO &amp; DI CHUYỂN ({mapName || 'PUBG'})</span>
+                    <span className="text-[11px] text-[#94A3B8]">
+                      {showRoundMinimap ? 'Thu gọn' : 'Mở bản đồ'}
+                    </span>
+                  </button>
+                  {showRoundMinimap && (
+                    <PubgMinimapPanel
+                      mapName={mapName || 'PUBG'}
+                      telemetry={mapTelemetry}
+                      selectedPhase={activeRound?.roundNumber}
+                    />
+                  )}
+                </div>
+              )}
+
               <div>
                 <h3 className="font-mono font-bold text-[#10B981] text-[11px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <CheckCircle size={13} weight="bold" aria-hidden="true" />
@@ -428,6 +456,13 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
       {/* TAB 2: TONG KET AI COACH */}
       {activeTab === 'MATCH' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
+          {!isValo && (
+            <PubgMinimapPanel
+              mapName={mapName || 'PUBG'}
+              telemetry={mapTelemetry || null}
+              selectedPhase={activeRound?.roundNumber}
+            />
+          )}
           {!report ? (
             <p className="text-[#64748B] text-xs leading-relaxed">
               Chọn một trận đấu đã phân tích để xem đánh giá tổng quát từ AI Coach.

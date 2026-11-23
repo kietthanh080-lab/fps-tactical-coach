@@ -6,9 +6,12 @@ import {
   Broadcast,
   ChartBar,
   Crosshair,
+  FolderOpen,
+  HardDrive,
   LinkBreak,
   LinkSimple,
   MagnifyingGlass,
+  PushPin,
   Record,
   ShareNetwork,
   ShieldCheck,
@@ -30,15 +33,18 @@ import {
   getAuthToken,
   getCaptureMode,
   getLocalVideoByMatchId,
+  LocalClipItem,
   PlayerSearchResult,
   pollAuthSession,
   prepareRiotLinkUrl,
   prepareSteamLinkUrl,
+  PubgMapTelemetrySummary,
   searchPlayerProfile,
   setAuthToken,
   setCaptureMode,
   syncRealPubgMatches,
   syncRealValorantMatches,
+  togglePinMatch,
   unlinkRiotAccount,
   updatePubgProfile,
 } from './services/localDb';
@@ -55,6 +61,7 @@ import { FriendsLeaderboard } from './components/FriendsLeaderboard';
 import { SettingsVaultModal } from './components/SettingsVaultModal';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 import { MatchTrendModal } from './components/MatchTrendModal';
+import { StorageManagerModal } from './components/StorageManagerModal';
 
 interface UserProfile {
   id: number;
@@ -79,6 +86,7 @@ interface SavedMatchItem {
   cloud_video_url: string | null;
   duration_sec: number;
   played_at: string;
+  is_pinned?: boolean;
 }
 
 function generateSessionId(): string {
@@ -159,6 +167,67 @@ const UpdateBanner: React.FC = () => {
   );
 };
 
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.6.0';
+
+const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
+  isElectronRuntime = false,
+}) => {
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+
+  const handleCheckUpdate = async () => {
+    const updater = (window as any).electronUpdater;
+    if (!updater?.checkForUpdates) return;
+    setChecking(true);
+    setCheckNote('Đang kiểm tra bản mới...');
+    try {
+      const res = await updater.checkForUpdates();
+      if (res && res.packaged === false) {
+        setCheckNote('Đang chạy bản Dev cục bộ.');
+      } else {
+        setCheckNote('Đã kiểm tra cập nhật.');
+      }
+    } catch {
+      setCheckNote('Không thể kiểm tra cập nhật lúc này.');
+    } finally {
+      setChecking(false);
+      window.setTimeout(() => setCheckNote(null), 4000);
+    }
+  };
+
+  return (
+    <footer className="border-t border-[#232B3B] bg-[#0A0D12] px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-[#94A3B8]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-bold text-[#EEF2F6]">TacticalReplayAI</span>
+        <span className="px-1.5 py-0.5 rounded-[2px] bg-[#171D28] border border-[#232B3B] text-[#38BDF8] font-bold tabular-nums">
+          v{APP_VERSION}
+        </span>
+        <span className="text-[#64748B]">
+          {isElectronRuntime
+            ? 'Desktop App'
+            : typeof overwolf !== 'undefined'
+              ? 'Overwolf Companion'
+              : 'Web Client'}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-3">
+        {checkNote && <span className="text-[#38BDF8]">{checkNote}</span>}
+        {isElectronRuntime && (window as any).electronUpdater?.checkForUpdates && (
+          <button
+            type="button"
+            disabled={checking}
+            onClick={() => void handleCheckUpdate()}
+            className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] disabled:opacity-50 transition duration-150"
+          >
+            {checking ? 'Đang kiểm tra...' : 'Kiểm tra cập nhật'}
+          </button>
+        )}
+      </div>
+    </footer>
+  );
+};
+
 const App: React.FC = () => {
   const reduceMotion = useReducedMotion();
   const [token, setTokenState] = useState<string | null>(() => getAuthToken());
@@ -169,6 +238,8 @@ const App: React.FC = () => {
 
   const [rounds, setRounds] = useState<AnalyzedRoundUI[]>([]);
   const [report, setReport] = useState<MatchReportUI | null>(null);
+  const [mapTelemetry, setMapTelemetry] = useState<PubgMapTelemetrySummary | null>(null);
+  const [matchClips, setMatchClips] = useState<LocalClipItem[]>([]);
   const [selectedRound, setSelectedRound] = useState<number>(1);
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
 
@@ -187,6 +258,9 @@ const App: React.FC = () => {
   const [showSettingsVault, setShowSettingsVault] = useState(false);
   const [showPostMatchRecap, setShowPostMatchRecap] = useState(false);
   const [showTrendModal, setShowTrendModal] = useState(false);
+  const [showStorageModal, setShowStorageModal] = useState(false);
+  const [matchSearchText, setMatchSearchText] = useState('');
+  const [matchFilterMode, setMatchFilterMode] = useState<'ALL' | 'WINS' | 'CLIPS' | 'PINNED'>('ALL');
 
   const [captureMode, setCaptureModeState] = useState<CaptureMode>(() => getCaptureMode());
   const [isElectronRuntime, setIsElectronRuntime] = useState(false);
@@ -204,6 +278,8 @@ const App: React.FC = () => {
   const [unlinkingRiot, setUnlinkingRiot] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [autoRefreshing, setAutoRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncingPubg, setSyncingPubg] = useState(false);
   const [syncingValorant, setSyncingValorant] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -213,6 +289,9 @@ const App: React.FC = () => {
   const activeGameTabRef = useRef(activeGameTab);
   activeGameTabRef.current = activeGameTab;
   const pollIntervalRef = useRef<number | null>(null);
+  const isBackgroundSyncingRef = useRef(false);
+  const prevActiveGameRef = useRef<'VALORANT' | 'PUBG' | null>(null);
+  const autoRefreshTriggerRef = useRef<((showToastOnNew?: boolean, isManual?: boolean) => Promise<void>) | null>(null);
 
   const serverRootUrl = API_BASE_URL.replace(/\/api\/?$/, '');
 
@@ -284,10 +363,13 @@ const App: React.FC = () => {
       );
     }
 
+    let postGameSyncTimer: number | null = null;
+
     if (electronAPI.getCaptureStatus) {
       void electronAPI
         .getCaptureStatus()
         .then((status: DesktopCaptureStatus) => {
+          prevActiveGameRef.current = status.activeGame;
           setDesktopCaptureStatus(status);
           void desktopRingRecorder.ensureState(status);
         })
@@ -306,23 +388,33 @@ const App: React.FC = () => {
     if (electronAPI.onCaptureStateChanged) {
       cleanups.push(
         electronAPI.onCaptureStateChanged((status: DesktopCaptureStatus) => {
+          const prevGame = prevActiveGameRef.current;
+          prevActiveGameRef.current = status.activeGame;
           setDesktopCaptureStatus(status);
           if (status.shouldRecord) setBlackFrameAlert(false);
           void desktopRingRecorder.ensureState(status);
+
+          // Khi vua thoat game, cho 10s de server API chot tran roi tu dong dong bo
+          if (prevGame && !status.activeGame) {
+            if (postGameSyncTimer !== null) window.clearTimeout(postGameSyncTimer);
+            postGameSyncTimer = window.setTimeout(() => {
+              void autoRefreshTriggerRef.current?.(true, false);
+            }, 10000);
+          }
         })
       );
     }
 
     desktopRingRecorder.setOnF9Saved((clip) => {
       setStatusMsg(
-        `Đã cắt Highlight (F9): ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
+        `Đã cắt Highlight: ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
       );
     });
 
     desktopRingRecorder.setOnBlackScreen(() => {
       setBlackFrameAlert(true);
       setStatusMsg(
-        'Cảnh báo: Khung hình quay bị đen do game độc chiếm Exclusive Fullscreen hoặc lệch card đồ họa. Hãy thử chuyển sang chế độ DXGI Classic ở sidebar.'
+        'Phát hiện khung hình quay bị đen khi chơi Fullscreen. Bấm nút "Sửa lỗi đen hình Fullscreen" ở cột trái để khắc phục.'
       );
     });
 
@@ -335,6 +427,7 @@ const App: React.FC = () => {
     }
 
     return () => {
+      if (postGameSyncTimer !== null) window.clearTimeout(postGameSyncTimer);
       desktopRingRecorder.setOnF9Saved(null);
       desktopRingRecorder.setOnBlackScreen(null);
       void desktopRingRecorder.stop();
@@ -346,6 +439,8 @@ const App: React.FC = () => {
     setSelectedMatchId(null);
     setRounds([]);
     setReport(null);
+    setMapTelemetry(null);
+    setMatchClips([]);
     setSelectedRound(1);
     setVideoSrc(null);
   }, []);
@@ -353,8 +448,10 @@ const App: React.FC = () => {
   const handleSelectMatch = useCallback(async (match: SavedMatchItem) => {
     setSelectedMatchId(match.match_id);
     setSelectedRound(1);
+    setMapTelemetry(null);
 
     const localRec = getLocalVideoByMatchId(match.match_id);
+    setMatchClips(localRec?.clips || []);
     if (localRec?.videoUrl) {
       setVideoSrc(localRec.videoUrl);
     } else if (localRec?.filePath) {
@@ -369,6 +466,7 @@ const App: React.FC = () => {
       const detail = await fetchMatchDetail(match.match_id);
       setRounds(detail.rounds || []);
       setReport(detail.report || null);
+      setMapTelemetry(detail.mapTelemetry || null);
       if (detail.rounds?.length > 0) {
         setSelectedRound(detail.rounds[0].roundNumber);
       }
@@ -438,63 +536,137 @@ const App: React.FC = () => {
   }, [token, loadUserVideos]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      autoRefreshTriggerRef.current = null;
+      return;
+    }
 
-    const autoCheckNewMatches = async () => {
+    const syncAndCheckMatches = async (showToastOnNew = true, isManual = false) => {
+      if (isBackgroundSyncingRef.current) return;
+      isBackgroundSyncingRef.current = true;
+      setAutoRefreshing(true);
+
       try {
+        const currentTab = activeGameTabRef.current;
+
+        // 1. Tu dong dong bo tran dau moi nhat tu API chinh thuc theo tab dang mo
         if (
-          activeGameTab === 'PUBG' &&
+          currentTab === 'PUBG' &&
           (profile?.pubg_player_name || profile?.steam_persona_name)
         ) {
           const res = await syncRealPubgMatches();
           if (res.syncedCount > 0) {
-            setStatusMsg(res.message);
             await loadUserVideos('PUBG');
-            setShowPostMatchRecap(true);
+            if (showToastOnNew) {
+              setStatusMsg(res.message);
+              setShowPostMatchRecap(true);
+            }
+            setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+            return;
+          }
+        } else if (
+          currentTab === 'VALORANT' &&
+          profile?.has_riot_linked &&
+          providers.riotApiReady
+        ) {
+          const res = await syncRealValorantMatches();
+          if (res.syncedCount > 0) {
+            await loadUserVideos('VALORANT');
+            if (showToastOnNew) {
+              setStatusMsg(res.message);
+              setShowPostMatchRecap(true);
+            }
+            setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
             return;
           }
         }
 
+        // 2. Tai lai danh sach tu may chu (nhan tran moi tu Overwolf hoac thiet bi khac)
         const latest = await fetchMyVideos();
         const latestList: SavedMatchItem[] = latest.videos || [];
         const currentList = videosRef.current;
 
-        const hasNewTopMatch =
-          latestList.length > 0 &&
-          (currentList.length === 0 || latestList[0].match_id !== currentList[0].match_id);
+        const currentTabList = currentList.filter((v) => v.game_type === currentTab);
+        const latestTabList = latestList.filter((v) => v.game_type === currentTab);
 
-        if (hasNewTopMatch) {
-          const tabMatches = latestList.filter((v) => v.game_type === activeGameTab);
-          await matchDesktopHighlightsForMatches(tabMatches).catch(() => []);
+        const hasNewTopInTab =
+          latestTabList.length > 0 &&
+          (currentTabList.length === 0 ||
+            latestTabList[0].match_id !== currentTabList[0].match_id);
+
+        if (hasNewTopInTab) {
+          await matchDesktopHighlightsForMatches(latestTabList).catch(() => []);
           setVideos(latestList);
-          if (tabMatches.length > 0) {
-            setStatusMsg('Phát hiện trận đấu mới, đã tự động cập nhật danh sách 20 trận gần nhất.');
-            await handleSelectMatch(tabMatches[0]);
+          await handleSelectMatch(latestTabList[0]);
+          if (showToastOnNew) {
+            setStatusMsg(
+              `Phát hiện trận ${currentTab} mới, đã tự động làm mới lịch sử 20 trận gần nhất.`
+            );
             setShowPostMatchRecap(true);
           }
-        } else if (latestList.length > 0) {
-          const tabMatches = latestList.filter((v) => v.game_type === activeGameTab);
-          const matchedIds = await matchDesktopHighlightsForMatches(tabMatches).catch(
-            () => [] as string[]
-          );
-          if (matchedIds.length > 0) {
+        } else {
+          const matchedIds =
+            latestTabList.length > 0
+              ? await matchDesktopHighlightsForMatches(latestTabList).catch(() => [] as string[])
+              : [];
+
+          const totalChanged =
+            latestList.length !== currentList.length ||
+            latestTabList.length !== currentTabList.length ||
+            latestTabList.some(
+              (m, idx) => m.cloud_video_url !== currentTabList[idx]?.cloud_video_url
+            );
+
+          if (matchedIds.length > 0 || totalChanged) {
             setVideos([...latestList]);
-            if (tabMatches[0] && matchedIds.includes(tabMatches[0].match_id)) {
-              await handleSelectMatch(tabMatches[0]);
+            if (
+              latestTabList[0] &&
+              (matchedIds.includes(latestTabList[0].match_id) || isManual)
+            ) {
+              await handleSelectMatch(latestTabList[0]);
             }
+          } else if (isManual && latestTabList.length > 0) {
+            setStatusMsg(`Lịch sử 20 trận ${currentTab} đã là mới nhất.`);
           }
         }
-      } catch {
-        // Bỏ qua lỗi mạng tạm thời khi chạy kiểm tra ngầm
+
+        setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+      } catch (err: any) {
+        if (isManual) {
+          setStatusMsg(err?.message || 'Không thể đồng bộ lịch sử trận đấu lúc này.');
+        }
+      } finally {
+        isBackgroundSyncingRef.current = false;
+        setAutoRefreshing(false);
       }
     };
 
-    const timer = setInterval(() => {
-      void autoCheckNewMatches();
-    }, 45000);
+    autoRefreshTriggerRef.current = syncAndCheckMatches;
 
-    return () => clearInterval(timer);
-  }, [token, activeGameTab, profile, loadUserVideos, handleSelectMatch]);
+    // Dong bo ngam ngay sau khi mo app / chuyen tab (khong bat popup lam phien)
+    const initialTimer = window.setTimeout(() => {
+      void syncAndCheckMatches(false, false);
+    }, 2000);
+
+    // Tu dong lam moi lich su moi 1 phut (60.000ms)
+    const intervalTimer = window.setInterval(() => {
+      void syncAndCheckMatches(true, false);
+    }, 60000);
+
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalTimer);
+    };
+  }, [
+    token,
+    activeGameTab,
+    profile?.pubg_player_name,
+    profile?.steam_persona_name,
+    profile?.has_riot_linked,
+    providers.riotApiReady,
+    loadUserVideos,
+    handleSelectMatch,
+  ]);
 
   const handleSwitchGameTab = async (tab: 'VALORANT' | 'PUBG') => {
     if (tab === activeGameTab) return;
@@ -754,6 +926,10 @@ const App: React.FC = () => {
     captureCompatMode?: 'wgc' | 'dxgi';
     captureQuality?: '720p30' | '1080p60';
     preferredScreenId?: string | null;
+    hotkey?: string;
+    micEnabled?: boolean;
+    beepEnabled?: boolean;
+    maxStorageGb?: number;
   }) => {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.setCaptureOptions) return;
@@ -764,9 +940,13 @@ const App: React.FC = () => {
         await desktopRingRecorder.ensureState(res.status);
       }
       if (res?.requiresRestart) {
+        if (electronAPI.relaunchApp) {
+          await electronAPI.relaunchApp();
+          return;
+        }
         setCompatNeedsRestart(true);
         setStatusMsg(
-          'Đã đổi bộ bắt hình (WGC / DXGI). Bấm "Khởi động lại app" ở cột trái để áp dụng ngay.'
+          'Đã đổi chế độ tương thích Fullscreen. Hãy mở lại ứng dụng để áp dụng ngay.'
         );
       } else if (next.captureQuality) {
         setStatusMsg(
@@ -774,9 +954,57 @@ const App: React.FC = () => {
             ? 'Đã chọn chất lượng 720p 30fps (tối ưu giữ nguyên FPS khi bắn Fullscreen).'
             : 'Đã chọn chất lượng 1080p 60fps.'
         );
+      } else if (next.hotkey) {
+        setStatusMsg(`Đã đổi phím cắt Highlight nhanh sang ${next.hotkey}.`);
+      } else if (typeof next.micEnabled === 'boolean') {
+        setStatusMsg(
+          next.micEnabled
+            ? 'Đã BẬT thu tiếng Micro cùng âm thanh game (áp dụng cho phiên quay tiếp theo).'
+            : 'Đã TẮT thu tiếng Micro khi quay.'
+        );
+      } else if (typeof next.beepEnabled === 'boolean') {
+        setStatusMsg(
+          next.beepEnabled
+            ? 'Đã BẬT âm báo Beep xác nhận khi cắt Highlight.'
+            : 'Đã TẮT âm báo Beep.'
+        );
+      } else if (typeof next.maxStorageGb === 'number') {
+        setStatusMsg(`Đã đặt giới hạn kho clip cục bộ tối đa ${next.maxStorageGb} GB.`);
       }
     } catch {
       setStatusMsg('Không thể cập nhật tùy chọn quay màn hình.');
+    }
+  };
+
+  const handleTogglePinMatch = async (match: SavedMatchItem) => {
+    const nextPinned = !Boolean(match.is_pinned);
+    setVideos((prev) =>
+      prev.map((m) => (m.match_id === match.match_id ? { ...m, is_pinned: nextPinned } : m))
+    );
+    try {
+      const res = await togglePinMatch(match.match_id, nextPinned);
+      setVideos((prev) =>
+        prev.map((m) => (m.match_id === match.match_id ? { ...m, is_pinned: res.isPinned } : m))
+      );
+      setStatusMsg(
+        res.isPinned
+          ? `Đã ghim trận ${match.map_name}. Trận này và clip sẽ được giữ lại, không bị xóa khi vượt 20 trận.`
+          : `Đã bỏ ghim trận ${match.map_name}.`
+      );
+    } catch (err: any) {
+      setVideos((prev) =>
+        prev.map((m) => (m.match_id === match.match_id ? { ...m, is_pinned: !nextPinned } : m))
+      );
+      setStatusMsg(err?.message || 'Không thể cập nhật trạng thái ghim trận.');
+    }
+  };
+
+  const handleOpenHighlightsFolder = () => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.openHighlightsFolder) {
+      void electronAPI.openHighlightsFolder();
+    } else {
+      setShowStorageModal(true);
     }
   };
 
@@ -789,7 +1017,7 @@ const App: React.FC = () => {
         setBlackFrameAlert(res.isBlack);
         setStatusMsg(
           res.isBlack
-            ? 'Khung hình kiểm tra bị ĐEN. Thử chuyển sang DXGI Fullscreen (rồi khởi động lại app) hoặc giữ Windows Fullscreen Optimizations / Windowed Fullscreen.'
+            ? 'Khung hình kiểm tra bị ĐEN do Fullscreen. Bấm nút sửa lỗi ngay bên dưới khung Test quay để chuyển chế độ tương thích.'
             : 'Không lấy được luồng màn hình. Kiểm tra quyền quay màn hình Windows.'
         );
       } else {
@@ -1168,6 +1396,7 @@ const App: React.FC = () => {
           </motion.section>
         </main>
 
+        <AppFooterVersion isElectronRuntime={isElectronRuntime} />
         <UpdateBanner />
       </div>
     );
@@ -1177,8 +1406,32 @@ const App: React.FC = () => {
   // 2. KHONG GIAN COCKPIT SAU DANG NHAP (XOAY VONG 20 TRAN & HIGHLIGHT)
   // ==========================================================================
   const isValo = activeGameTab === 'VALORANT';
-  const filteredVideos = videos.filter((v) => v.game_type === activeGameTab).slice(0, 20);
-  const activeMatch = filteredVideos.find((v) => v.match_id === selectedMatchId);
+  const tabBaseVideos = videos.filter((v) => v.game_type === activeGameTab);
+  const filteredVideos = tabBaseVideos.filter((v) => {
+    const query = matchSearchText.trim().toLowerCase();
+    if (query) {
+      const haystack = `${v.map_name} ${v.game_mode} ${v.match_result} ${v.score_summary || ''}`.toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    if (matchFilterMode === 'PINNED') return Boolean(v.is_pinned);
+    if (matchFilterMode === 'CLIPS') {
+      return Boolean(v.cloud_video_url || getLocalVideoByMatchId(v.match_id));
+    }
+    if (matchFilterMode === 'WINS') {
+      const r = (v.match_result || '').toUpperCase();
+      return (
+        r.includes('WIN') ||
+        r.includes('THẮNG') ||
+        r.includes('#1') ||
+        r.includes('TOP 1') ||
+        r.includes('1/')
+      );
+    }
+    return true;
+  });
+  const activeMatch =
+    tabBaseVideos.find((v) => v.match_id === selectedMatchId) ||
+    filteredVideos.find((v) => v.match_id === selectedMatchId);
   const activeRound = rounds.find((r) => r.roundNumber === selectedRound);
   const hasRiotLinked = Boolean(profile?.has_riot_linked);
   const isOverwolfRuntime =
@@ -1251,6 +1504,14 @@ const App: React.FC = () => {
             >
               <ChartBar size={14} weight="bold" aria-hidden="true" />
               <span>Phong độ 20 trận</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowStorageModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150 active:translate-y-[1px]"
+            >
+              <HardDrive size={14} weight="bold" aria-hidden="true" />
+              <span>Kho Clip &amp; R2</span>
             </button>
             {activeMatch && (
               <>
@@ -1342,19 +1603,34 @@ const App: React.FC = () => {
           className="lg:col-span-3 bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-3"
         >
           <div className="flex items-center justify-between border-b border-[#232B3B] pb-2.5">
-            <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] tabular-nums">
-              {isValo
-                ? `20 Trận VALORANT (${filteredVideos.length}/20)`
-                : `20 Trận PUBG (${filteredVideos.length}/20)`}
-            </h2>
+            <div>
+              <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] tabular-nums">
+                {isValo
+                  ? `20 Trận VALORANT (${filteredVideos.length}/20)`
+                  : `20 Trận PUBG (${filteredVideos.length}/20)`}
+              </h2>
+              <p className="font-mono text-[10px] text-[#64748B] tabular-nums mt-0.5">
+                {autoRefreshing
+                  ? 'Đang tự đồng bộ...'
+                  : lastSyncedAt
+                    ? `Tự làm mới 1 phút/lần (${lastSyncedAt})`
+                    : 'Tự làm mới mỗi 1 phút'}
+              </p>
+            </div>
             <button
               type="button"
-              onClick={() => void loadUserVideos(activeGameTab)}
-              className={`inline-flex items-center gap-1 font-mono text-xs font-bold hover:underline ${
+              disabled={autoRefreshing}
+              onClick={() => void autoRefreshTriggerRef.current?.(true, true)}
+              className={`inline-flex items-center gap-1 font-mono text-xs font-bold hover:underline disabled:opacity-60 ${
                 isValo ? 'text-[#FF4655]' : 'text-[#E59A23]'
               }`}
             >
-              <ArrowsClockwise size={13} weight="bold" aria-hidden="true" />
+              <ArrowsClockwise
+                size={13}
+                weight="bold"
+                className={autoRefreshing ? 'animate-spin' : ''}
+                aria-hidden="true"
+              />
               <span>Làm mới</span>
             </button>
           </div>
@@ -1509,39 +1785,22 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono text-[#94A3B8]">
-                      Engine Fullscreen
-                    </span>
-                    <div className="flex gap-1">
+                  {desktopCaptureStatus?.captureCompatMode === 'dxgi' && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono text-[#E59A23]">
+                        Chống đen Fullscreen: BẬT
+                      </span>
                       <button
                         type="button"
                         onClick={() =>
                           void handleUpdateCaptureOptions({ captureCompatMode: 'wgc' })
                         }
-                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
-                          (desktopCaptureStatus?.captureCompatMode || 'wgc') === 'wgc'
-                            ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8] font-bold'
-                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
-                        }`}
+                        className="px-1.5 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[10px] font-mono text-[#94A3B8]"
                       >
-                        WGC
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUpdateCaptureOptions({ captureCompatMode: 'dxgi' })
-                        }
-                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
-                          desktopCaptureStatus?.captureCompatMode === 'dxgi'
-                            ? 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23] font-bold'
-                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
-                        }`}
-                      >
-                        DXGI Classic
+                        Về mặc định
                       </button>
                     </div>
-                  </div>
+                  )}
 
                   {compatNeedsRestart && (
                     <button
@@ -1549,7 +1808,7 @@ const App: React.FC = () => {
                       onClick={() => void (window as any).electronAPI?.relaunchApp?.()}
                       className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
                     >
-                      Khởi động lại app để áp dụng Engine mới
+                      Khởi động lại app để áp dụng
                     </button>
                   )}
 
@@ -1588,7 +1847,7 @@ const App: React.FC = () => {
                     onClick={() => void desktopRingRecorder.triggerF9Highlight(activeGameTab)}
                     className="flex-1 py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-[10px] font-mono font-bold text-[#E59A23] transition duration-150"
                   >
-                    Cắt ngay (F9)
+                    Cắt ngay ({desktopCaptureStatus?.hotkey || 'F9'})
                   </button>
                   <button
                     type="button"
@@ -1598,12 +1857,36 @@ const App: React.FC = () => {
                   >
                     {testingCapture ? 'Đang thử...' : 'Test quay'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenHighlightsFolder}
+                    aria-label="Mở thư mục lưu clip"
+                    title="Mở thư mục lưu clip trên máy"
+                    className="p-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+                  >
+                    <FolderOpen size={13} weight="bold" aria-hidden="true" />
+                  </button>
                 </div>
 
                 {blackFrameAlert && (
-                  <p className="p-2 rounded-[2px] bg-[#F43F5E]/10 border border-[#F43F5E]/30 text-[10px] text-[#F43F5E] leading-relaxed">
-                    Phát hiện khung hình đen (Exclusive Fullscreen chặn DWM). Hãy thử bật <b>DXGI Classic</b> rồi khởi động lại app, giữ bật Windows Fullscreen Optimizations hoặc chuyển sang Windowed Fullscreen trong game.
-                  </p>
+                  <div className="p-2 rounded-[2px] bg-[#F43F5E]/10 border border-[#F43F5E]/30 space-y-1.5">
+                    <p className="text-[10px] text-[#F43F5E] leading-relaxed">
+                      {desktopCaptureStatus?.captureCompatMode === 'dxgi'
+                        ? 'Khung hình vẫn bị đen dù đang bật chế độ tương thích Fullscreen. Hãy chuyển game sang Windowed Fullscreen, hoặc cài Overwolf để quay mượt.'
+                        : 'Video đang bị đen do game chạy Fullscreen. Thử chuyển sang chế độ tương thích để khắc phục ngay:'}
+                    </p>
+                    {desktopCaptureStatus?.captureCompatMode !== 'dxgi' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleUpdateCaptureOptions({ captureCompatMode: 'dxgi' })
+                        }
+                        className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
+                      >
+                        Bật chống đen Fullscreen &amp; Khởi động lại
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 <div className="pt-1 border-t border-[#232B3B]/60 flex items-center justify-between gap-1.5">
@@ -1753,6 +2036,55 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {tabBaseVideos.length > 0 && !loading && (
+            <div className="space-y-1.5 rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2">
+              <div className="relative">
+                <label htmlFor="match-search-input" className="sr-only">
+                  Tìm kiếm trận đấu theo map hoặc kết quả
+                </label>
+                <MagnifyingGlass
+                  size={12}
+                  weight="bold"
+                  aria-hidden="true"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 text-[#64748B]"
+                />
+                <input
+                  id="match-search-input"
+                  type="text"
+                  value={matchSearchText}
+                  onChange={(e) => setMatchSearchText(e.target.value)}
+                  placeholder="Tìm map, mode, top..."
+                  className="w-full pl-6 pr-2 py-1 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#38BDF8] text-[11px] font-mono text-[#EEF2F6] placeholder-[#64748B] focus:outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-4 gap-1">
+                {(
+                  [
+                    { id: 'ALL', label: 'Tất cả' },
+                    { id: 'WINS', label: 'Thắng/#1' },
+                    { id: 'CLIPS', label: 'Có Clip' },
+                    { id: 'PINNED', label: 'Đã ghim' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setMatchFilterMode(tab.id)}
+                    className={`py-1 px-1 rounded-[2px] font-mono text-[10px] font-bold transition duration-150 ${
+                      matchFilterMode === tab.id
+                        ? isValo
+                          ? 'bg-[#FF4655] text-[#EEF2F6]'
+                          : 'bg-[#E59A23] text-[#0A0D12]'
+                        : 'bg-[#171D28] text-[#94A3B8] hover:text-[#EEF2F6]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="space-y-2 py-1" aria-label="Đang tải danh sách trận đấu">
               {[1, 2, 3, 4, 5].map((item) => (
@@ -1762,7 +2094,7 @@ const App: React.FC = () => {
                 />
               ))}
             </div>
-          ) : filteredVideos.length === 0 ? (
+          ) : tabBaseVideos.length === 0 ? (
             <div className="rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] p-4 text-xs text-[#94A3B8] space-y-2 leading-relaxed">
               <p className="font-bold text-[#EEF2F6]">
                 {isValo
@@ -1775,56 +2107,107 @@ const App: React.FC = () => {
                   : 'Bấm nút đồng bộ 20 trận PUBG hoặc chơi qua Overwolf để tự động lưu replay và phân tích.'}
               </p>
             </div>
+          ) : filteredVideos.length === 0 ? (
+            <div className="rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] p-4 text-xs text-[#94A3B8] space-y-2">
+              <p className="font-bold text-[#EEF2F6]">
+                Không có trận nào khớp bộ lọc hiện tại.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setMatchSearchText('');
+                  setMatchFilterMode('ALL');
+                }}
+                className="px-2.5 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[11px] font-bold text-[#38BDF8]"
+              >
+                Xóa bộ lọc
+              </button>
+            </div>
           ) : (
             <div className="space-y-2 overflow-y-auto max-h-[75vh] tactical-scrollbar pr-1">
               {filteredVideos.map((v) => {
                 const isSelected = v.match_id === selectedMatchId;
-                const hasHighlight = Boolean(
-                  v.cloud_video_url || getLocalVideoByMatchId(v.match_id)
-                );
+                const localRecord = getLocalVideoByMatchId(v.match_id);
+                const clipCount = localRecord?.clips?.length || (localRecord?.filePath ? 1 : 0);
+                const hasHighlight = Boolean(v.cloud_video_url || localRecord);
 
                 return (
-                  <button
+                  <div
                     key={v.match_id}
-                    type="button"
-                    onClick={() => void handleSelectMatch(v)}
-                    className={`w-full text-left p-3 rounded-[2px] border transition duration-150 space-y-1.5 active:translate-y-[1px] ${
+                    className={`flex items-stretch rounded-[2px] border transition duration-150 ${
                       isSelected
                         ? isValo
                           ? 'bg-[#FF4655]/12 border-[#FF4655]'
                           : 'bg-[#E59A23]/12 border-[#E59A23]'
-                        : 'bg-[#0A0D12] border-[#232B3B] hover:border-[#334155] hover:bg-[#171D28]'
+                        : v.is_pinned
+                          ? 'bg-[#0A0D12] border-[#E59A23]/45 hover:bg-[#171D28]'
+                          : 'bg-[#0A0D12] border-[#232B3B] hover:border-[#334155] hover:bg-[#171D28]'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] border ${
-                            isValo
-                              ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
-                              : 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
-                          }`}
-                        >
-                          {v.game_mode || v.game_type}
-                        </span>
-                        {hasHighlight && (
-                          <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30">
-                            <VideoCamera size={10} weight="bold" aria-hidden="true" />
-                            <span>CLIP</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectMatch(v)}
+                      className="flex-1 min-w-0 text-left p-3 space-y-1.5 active:translate-y-[1px]"
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <span
+                            className={`font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] border ${
+                              isValo
+                                ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
+                                : 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
+                            }`}
+                          >
+                            {v.game_mode || v.game_type}
                           </span>
-                        )}
+                          {hasHighlight && (
+                            <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30">
+                              <VideoCamera size={10} weight="bold" aria-hidden="true" />
+                              <span>{clipCount > 1 ? `${clipCount} CLIP` : 'CLIP'}</span>
+                            </span>
+                          )}
+                          {v.is_pinned && (
+                            <span className="font-mono text-[10px] font-bold px-1 py-0.5 rounded-[2px] bg-[#E59A23]/15 text-[#E59A23] border border-[#E59A23]/40">
+                              GHIM
+                            </span>
+                          )}
+                        </div>
+                        <span className="font-mono text-[11px] text-[#64748B] tabular-nums shrink-0">
+                          {new Date(v.played_at).toLocaleDateString('vi-VN')}
+                        </span>
                       </div>
-                      <span className="font-mono text-[11px] text-[#64748B] tabular-nums">
-                        {new Date(v.played_at).toLocaleDateString('vi-VN')}
-                      </span>
-                    </div>
-                    <p className="font-display text-sm font-bold text-[#EEF2F6] truncate">
-                      {v.map_name}
-                    </p>
-                    <p className="font-mono text-[11px] text-[#94A3B8] tabular-nums">
-                      {v.match_result} {v.score_summary ? `- ${v.score_summary}` : ''}
-                    </p>
-                  </button>
+                      <p className="font-display text-sm font-bold text-[#EEF2F6] truncate">
+                        {v.map_name}
+                      </p>
+                      <p className="font-mono text-[11px] text-[#94A3B8] tabular-nums">
+                        {v.match_result} {v.score_summary ? `- ${v.score_summary}` : ''}
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleTogglePinMatch(v)}
+                      aria-label={
+                        v.is_pinned ? `Bỏ ghim trận ${v.map_name}` : `Ghim trận ${v.map_name}`
+                      }
+                      title={
+                        v.is_pinned
+                          ? 'Bỏ ghim trận này'
+                          : 'Ghim trận (giữ lại vĩnh viễn không bị xóa khi đầy 20 trận)'
+                      }
+                      className={`px-2 border-l border-[#232B3B]/70 flex items-center justify-center transition duration-150 ${
+                        v.is_pinned
+                          ? 'text-[#E59A23] bg-[#E59A23]/10 hover:bg-[#E59A23]/20'
+                          : 'text-[#64748B] hover:text-[#EEF2F6] hover:bg-[#171D28]'
+                      }`}
+                    >
+                      <PushPin
+                        size={14}
+                        weight={v.is_pinned ? 'fill' : 'bold'}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -1838,12 +2221,14 @@ const App: React.FC = () => {
             matchId={activeMatch?.match_id || null}
             hasSelectedMatch={Boolean(activeMatch)}
             videoSrc={videoSrc}
+            clips={matchClips}
             matchTitle={
               activeMatch ? `${activeMatch.map_name} (${activeMatch.match_result})` : ''
             }
             rounds={rounds}
             selectedRound={selectedRound}
             onSelectRound={setSelectedRound}
+            onOpenHighlightsFolder={isElectronRuntime ? handleOpenHighlightsFolder : undefined}
             onHighlightSaved={(cloudUrl) => {
               setVideoSrc(cloudUrl);
               setStatusMsg('Đã lưu video highlight lên hệ thống.');
@@ -1867,9 +2252,12 @@ const App: React.FC = () => {
             activeRound={activeRound}
             report={report}
             rounds={rounds}
+            mapTelemetry={mapTelemetry}
           />
         </aside>
       </main>
+
+      <AppFooterVersion isElectronRuntime={isElectronRuntime} />
 
       <FriendsLeaderboard
         isOpen={showLeaderboard}
@@ -1887,8 +2275,17 @@ const App: React.FC = () => {
       <MatchTrendModal
         isOpen={showTrendModal}
         gameType={activeGameTab}
-        matches={filteredVideos}
+        matches={tabBaseVideos.slice(0, 20)}
         onClose={() => setShowTrendModal(false)}
+      />
+
+      <StorageManagerModal
+        isOpen={showStorageModal}
+        isElectronRuntime={isElectronRuntime}
+        captureStatus={desktopCaptureStatus}
+        pinnedMatchIds={videos.filter((v) => v.is_pinned).map((v) => v.match_id)}
+        onUpdateOptions={handleUpdateCaptureOptions}
+        onClose={() => setShowStorageModal(false)}
       />
 
       <PostMatchRecapToast

@@ -84,6 +84,23 @@ export async function ensureFeatureTables(): Promise<void> {
           PRIMARY KEY (squad_id, user_id)
         )`
       );
+      await dbPool.query(
+        `CREATE TABLE IF NOT EXISTS match_telemetry (
+          match_id VARCHAR(128) PRIMARY KEY,
+          map_size_cm INT NOT NULL DEFAULT 816000,
+          telemetry_json LONGTEXT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )`
+      );
+      try {
+        await dbPool.query(
+          'ALTER TABLE matches ADD COLUMN is_pinned TINYINT(1) NOT NULL DEFAULT 0'
+        );
+      } catch (err: any) {
+        if (err?.errno !== 1060) {
+          console.warn('Cảnh báo thêm cột is_pinned:', err?.message);
+        }
+      }
     })().catch((err) => {
       featureTablesReadyPromise = null;
       throw err;

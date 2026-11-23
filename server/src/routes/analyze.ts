@@ -10,7 +10,9 @@ import { authenticateToken, AuthRequest, isConfiguredEnv } from './auth';
 import { createPresignedPutUrl, getS3Config } from '../utils/s3Presign';
 import {
   analyzeRoundTactics,
+  extractPubgMapTelemetry,
   parsePubgTelemetryToRounds,
+  PubgMapTelemetrySummary,
   RawRoundInput,
   TimelineEventInput,
   WeaponUsageStat,
@@ -156,10 +158,11 @@ async function enforceRollingMatchLimit(
   gameType: 'VALORANT' | 'PUBG',
   maxKeep = MAX_STORED_MATCHES
 ): Promise<void> {
+  await ensureFeatureTables();
   const [rows] = await dbPool.query<RowDataPacket[]>(
     `SELECT match_id, cloud_video_url
      FROM matches
-     WHERE user_id = ? AND game_type = ?
+     WHERE user_id = ? AND game_type = ? AND COALESCE(is_pinned, 0) = 0
      ORDER BY played_at DESC`,
     [userId, gameType]
   );
@@ -183,6 +186,7 @@ async function enforceRollingMatchLimit(
 
   await dbPool.query('DELETE FROM match_rounds WHERE match_id IN (?)', [evictedIds]);
   await dbPool.query('DELETE FROM match_reports WHERE match_id IN (?)', [evictedIds]);
+  await dbPool.query('DELETE FROM match_telemetry WHERE match_id IN (?)', [evictedIds]);
   await dbPool.query('DELETE FROM matches WHERE user_id = ? AND match_id IN (?)', [
     userId,
     evictedIds,
@@ -718,6 +722,12 @@ router.get('/match/:matchId', authenticateToken, async (req: AuthRequest, res: R
       [matchId]
     );
 
+    await ensureFeatureTables();
+    const [telemetryRows] = await dbPool.query<RowDataPacket[]>(
+      'SELECT map_size_cm, telemetry_json FROM match_telemetry WHERE match_id = ?',
+      [matchId]
+    );
+
     const rawReport = reportRows[0];
     const formattedReport = rawReport
       ? {
@@ -729,15 +739,67 @@ router.get('/match/:matchId', authenticateToken, async (req: AuthRequest, res: R
         }
       : null;
 
+    const mapTelemetry = telemetryRows[0]
+      ? safeParseJson<PubgMapTelemetrySummary | null>(telemetryRows[0].telemetry_json, null)
+      : null;
+
     res.json({
-      match: matches[0],
+      match: {
+        ...matches[0],
+        is_pinned: Boolean(matches[0].is_pinned),
+      },
       rounds: formattedRounds,
       report: formattedReport,
+      mapTelemetry,
     });
   } catch (error) {
     console.error('Lỗi tải chi tiết trận đấu:', error);
     res.status(500).json({ error: 'Lỗi máy chủ khi tải dữ liệu trận đấu.' });
   }
+});
+
+// 3b. POST /api/analyze/match/:matchId/pin - Ghim tran hay de khong bi xoay vong 20 tran xoa mat
+router.post('/match/:matchId/pin', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  const matchId = String(req.params.matchId || '').trim();
+  const pinned = req.body?.pinned !== undefined ? Boolean(req.body.pinned) : true;
+
+  if (!userId || !matchId) {
+    res.status(400).json({ error: 'Thiếu mã trận đấu.' });
+    return;
+  }
+
+  try {
+    await ensureFeatureTables();
+    const [result]: any = await dbPool.query(
+      'UPDATE matches SET is_pinned = ? WHERE match_id = ? AND user_id = ?',
+      [pinned ? 1 : 0, matchId, userId]
+    );
+    if (!result?.affectedRows) {
+      res.status(404).json({ error: 'Không tìm thấy trận đấu thuộc tài khoản của bạn.' });
+      return;
+    }
+    res.json({
+      matchId,
+      isPinned: pinned,
+      message: pinned
+        ? 'Đã ghim trận đấu (không bị tự động xóa khi vượt quá 20 trận).'
+        : 'Đã bỏ ghim trận đấu.',
+    });
+  } catch (error) {
+    console.error('Lỗi ghim trận đấu:', error);
+    res.status(500).json({ error: 'Không thể cập nhật trạng thái ghim trận đấu.' });
+  }
+});
+
+// 3c. GET /api/analyze/storage-status - Kiem tra R2/S3 da bat hay chua
+router.get('/storage-status', (_req: Request, res: Response) => {
+  const s3Cfg = getS3Config();
+  res.json({
+    s3Configured: Boolean(s3Cfg),
+    mode: s3Cfg ? 's3-presigned' : 'direct-server',
+    maxDirectUploadMb: 4.5,
+  });
 });
 
 // 4. POST /api/analyze/pubg/sync — Đồng bộ 20 trận gần nhất & tự bổ sung chi tiết vũ khí
@@ -844,17 +906,20 @@ router.post('/pubg/sync', authenticateToken, async (req: AuthRequest, res: Respo
             const telemetryUrl = telemetryAsset?.attributes?.URL;
 
             let rawRounds: RawRoundInput[] = [];
+            let mapTelemetry: PubgMapTelemetrySummary | null = null;
             if (telemetryUrl) {
               const telemetryRes = await axios.get(telemetryUrl, {
                 headers: { 'Accept-Encoding': 'gzip' },
                 timeout: 20000,
               });
               rawRounds = parsePubgTelemetryToRounds(telemetryRes.data, playerName, []);
+              mapTelemetry = extractPubgMapTelemetry(telemetryRes.data, playerName);
             }
 
             const analyzedRounds = rawRounds.map((r) => analyzeRoundTactics(r, 'PUBG'));
             const report = await generateMatchReport('PUBG', mapName, analyzedRounds);
 
+            await ensureFeatureTables();
             const conn = await dbPool.getConnection();
             try {
               await conn.beginTransaction();
@@ -915,6 +980,17 @@ router.post('/pubg/sync', authenticateToken, async (req: AuthRequest, res: Respo
                   report.coachCommentary,
                 ]
               );
+
+              if (mapTelemetry) {
+                await conn.query(
+                  `INSERT INTO match_telemetry (match_id, map_size_cm, telemetry_json)
+                   VALUES (?, ?, ?)
+                   ON DUPLICATE KEY UPDATE
+                     map_size_cm = VALUES(map_size_cm),
+                     telemetry_json = VALUES(telemetry_json)`,
+                  [matchId, mapTelemetry.mapSizeCm, JSON.stringify(mapTelemetry)]
+                );
+              }
 
               await conn.commit();
               syncedCount += 1;

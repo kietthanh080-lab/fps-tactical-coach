@@ -36,7 +36,7 @@ let gameWatcherTimer = null;
 let isCheckingProcesses = false;
 const startHidden = process.argv.includes('--hidden');
 
-const HOTKEY_HIGHLIGHT = 'F9';
+const ALLOWED_HOTKEYS = ['F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'Alt+H', 'Alt+Z', 'Alt+X', 'Ctrl+Shift+H'];
 const TEMP_RETENTION_MS = 90 * 60 * 1000;
 const MAX_TEMP_SEGMENTS = 120;
 
@@ -49,6 +49,10 @@ const runtimeCaptureState = {
   captureCompatMode: 'wgc', // 'wgc' | 'dxgi'
   captureQuality: '720p30', // '720p30' | '1080p60'
   preferredScreenId: null,
+  hotkey: 'F9',
+  micEnabled: false,
+  beepEnabled: true,
+  maxStorageGb: 5,
   hotkeyRegistered: false,
 };
 
@@ -65,6 +69,18 @@ function readInitialPrefsSyncForSwitches() {
     }
     if (typeof parsed?.preferredScreenId === 'string' && parsed.preferredScreenId) {
       runtimeCaptureState.preferredScreenId = parsed.preferredScreenId;
+    }
+    if (typeof parsed?.hotkey === 'string' && ALLOWED_HOTKEYS.includes(parsed.hotkey)) {
+      runtimeCaptureState.hotkey = parsed.hotkey;
+    }
+    if (typeof parsed?.micEnabled === 'boolean') {
+      runtimeCaptureState.micEnabled = parsed.micEnabled;
+    }
+    if (typeof parsed?.beepEnabled === 'boolean') {
+      runtimeCaptureState.beepEnabled = parsed.beepEnabled;
+    }
+    if (typeof parsed?.maxStorageGb === 'number' && parsed.maxStorageGb >= 1 && parsed.maxStorageGb <= 100) {
+      runtimeCaptureState.maxStorageGb = parsed.maxStorageGb;
     }
   } catch {
     // Su dung mac dinh WGC + 720p30 neu chua co file cau hinh
@@ -265,7 +281,11 @@ function getCapturePayload() {
     captureQuality: runtimeCaptureState.captureQuality,
     preferredScreenId: runtimeCaptureState.preferredScreenId,
     hotkeyRegistered: runtimeCaptureState.hotkeyRegistered,
-    hotkey: HOTKEY_HIGHLIGHT,
+    hotkey: runtimeCaptureState.hotkey,
+    micEnabled: runtimeCaptureState.micEnabled,
+    beepEnabled: runtimeCaptureState.beepEnabled,
+    maxStorageGb: runtimeCaptureState.maxStorageGb,
+    allowedHotkeys: ALLOWED_HOTKEYS,
     shouldRecord: Boolean(
       runtimeCaptureState.activeGame &&
         runtimeCaptureState.desktopCaptureEnabled &&
@@ -386,7 +406,7 @@ function triggerHotkeyCapture() {
 
 function syncHotkeyRegistration() {
   try {
-    globalShortcut.unregister(HOTKEY_HIGHLIGHT);
+    globalShortcut.unregisterAll();
   } catch {
     // Bo qua neu chua dang ky
   }
@@ -397,7 +417,7 @@ function syncHotkeyRegistration() {
   }
 
   try {
-    const ok = globalShortcut.register(HOTKEY_HIGHLIGHT, () => {
+    const ok = globalShortcut.register(runtimeCaptureState.hotkey, () => {
       triggerHotkeyCapture();
     });
     runtimeCaptureState.hotkeyRegistered = Boolean(ok);
@@ -465,7 +485,7 @@ function refreshTrayMenu() {
       click: () => showMainWindow(),
     },
     {
-      label: `Cắt Highlight ngay (${HOTKEY_HIGHLIGHT})`,
+      label: `Cắt Highlight ngay (${runtimeCaptureState.hotkey})`,
       enabled: payload.desktopCaptureEnabled && !payload.overwolfRunning,
       click: () => triggerHotkeyCapture(),
     },
@@ -567,8 +587,12 @@ function setupAutoUpdater() {
   });
 }
 
-ipcMain.handle('check-for-updates', () => {
-  if (app.isPackaged) autoUpdater.checkForUpdates();
+ipcMain.handle('check-for-updates', async () => {
+  if (!app.isPackaged) {
+    return { ok: true, packaged: false };
+  }
+  await autoUpdater.checkForUpdates();
+  return { ok: true, packaged: true };
 });
 
 ipcMain.handle('start-download-update', () => {
@@ -641,30 +665,193 @@ ipcMain.handle('capture:list-screens', async () => {
 
 ipcMain.handle('capture:set-capture-options', (_event, payload) => {
   const prevCompat = runtimeCaptureState.captureCompatMode;
-  const nextCompat = payload?.captureCompatMode === 'dxgi' ? 'dxgi' : 'wgc';
-  const nextQuality = payload?.captureQuality === '1080p60' ? '1080p60' : '720p30';
+  const prevHotkey = runtimeCaptureState.hotkey;
+
+  const nextCompat =
+    payload?.captureCompatMode === 'dxgi'
+      ? 'dxgi'
+      : payload?.captureCompatMode === 'wgc'
+        ? 'wgc'
+        : runtimeCaptureState.captureCompatMode;
+  const nextQuality =
+    payload?.captureQuality === '1080p60'
+      ? '1080p60'
+      : payload?.captureQuality === '720p30'
+        ? '720p30'
+        : runtimeCaptureState.captureQuality;
   const nextScreenId =
     payload?.preferredScreenId === null
       ? null
       : typeof payload?.preferredScreenId === 'string' && payload.preferredScreenId.trim()
         ? payload.preferredScreenId.trim()
         : runtimeCaptureState.preferredScreenId;
+  const nextHotkey =
+    typeof payload?.hotkey === 'string' && ALLOWED_HOTKEYS.includes(payload.hotkey)
+      ? payload.hotkey
+      : runtimeCaptureState.hotkey;
+  const nextMicEnabled =
+    typeof payload?.micEnabled === 'boolean'
+      ? payload.micEnabled
+      : runtimeCaptureState.micEnabled;
+  const nextBeepEnabled =
+    typeof payload?.beepEnabled === 'boolean'
+      ? payload.beepEnabled
+      : runtimeCaptureState.beepEnabled;
+  const nextMaxGb =
+    typeof payload?.maxStorageGb === 'number' &&
+    payload.maxStorageGb >= 1 &&
+    payload.maxStorageGb <= 100
+      ? Math.round(payload.maxStorageGb)
+      : runtimeCaptureState.maxStorageGb;
 
   runtimeCaptureState.captureCompatMode = nextCompat;
   runtimeCaptureState.captureQuality = nextQuality;
   runtimeCaptureState.preferredScreenId = nextScreenId;
+  runtimeCaptureState.hotkey = nextHotkey;
+  runtimeCaptureState.micEnabled = nextMicEnabled;
+  runtimeCaptureState.beepEnabled = nextBeepEnabled;
+  runtimeCaptureState.maxStorageGb = nextMaxGb;
 
   writeBackgroundPrefs({
     captureCompatMode: nextCompat,
     captureQuality: nextQuality,
     preferredScreenId: nextScreenId,
+    hotkey: nextHotkey,
+    micEnabled: nextMicEnabled,
+    beepEnabled: nextBeepEnabled,
+    maxStorageGb: nextMaxGb,
   });
+
+  if (prevHotkey !== nextHotkey) {
+    syncHotkeyRegistration();
+  }
 
   broadcastCaptureState();
   return {
     requiresRestart: prevCompat !== nextCompat,
     status: getCapturePayload(),
   };
+});
+
+function getHighlightsStorageStats() {
+  const dir = getHighlightsDir();
+  const list = readSegmentsIndex();
+  const matchIdByPath = new Map();
+  for (const s of list) {
+    if (s.permanentPath) matchIdByPath.set(path.resolve(s.permanentPath), s.attachedMatchId || null);
+  }
+
+  let files = [];
+  let totalBytes = 0;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      if (!/\.(webm|mp4|mkv)$/i.test(ent.name)) continue;
+      const full = path.join(dir, ent.name);
+      try {
+        const st = fs.statSync(full);
+        totalBytes += st.size;
+        files.push({
+          name: ent.name,
+          filePath: full,
+          sizeBytes: st.size,
+          modifiedAt: st.mtime.toISOString(),
+          attachedMatchId: matchIdByPath.get(path.resolve(full)) || null,
+        });
+      } catch {
+        // Bo qua file dang ghi
+      }
+    }
+  } catch {
+    // Bo qua neu chua co thu muc
+  }
+
+  files.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+  return {
+    folderPath: dir,
+    totalBytes,
+    fileCount: files.length,
+    maxStorageGb: runtimeCaptureState.maxStorageGb,
+    files,
+  };
+}
+
+function enforceHighlightsStorageLimit(protectedMatchIds = []) {
+  const stats = getHighlightsStorageStats();
+  const maxBytes = runtimeCaptureState.maxStorageGb * 1024 * 1024 * 1024;
+  if (stats.totalBytes <= maxBytes) return 0;
+
+  const protectedSet = new Set((protectedMatchIds || []).filter(Boolean));
+  // Xoa tu file cu nhat neu khong thuoc tran dang ghim
+  const oldestFirst = [...stats.files].reverse();
+  let currentBytes = stats.totalBytes;
+  let removedCount = 0;
+
+  for (const f of oldestFirst) {
+    if (currentBytes <= maxBytes) break;
+    if (f.attachedMatchId && protectedSet.has(f.attachedMatchId)) continue;
+    try {
+      fs.unlinkSync(f.filePath);
+      currentBytes -= f.sizeBytes;
+      removedCount += 1;
+    } catch {
+      // Bo qua neu dang phat
+    }
+  }
+  return removedCount;
+}
+
+ipcMain.handle('capture:open-highlights-folder', async () => {
+  const dir = getHighlightsDir();
+  await shell.openPath(dir);
+  return { opened: true, folderPath: dir };
+});
+
+ipcMain.handle('capture:get-storage-stats', () => {
+  return getHighlightsStorageStats();
+});
+
+ipcMain.handle('capture:delete-local-clip', (_event, filePath) => {
+  if (typeof filePath !== 'string' || !filePath) return { deleted: false };
+  const resolved = path.resolve(filePath);
+  const root = path.resolve(getHighlightsDir());
+  if (!resolved.startsWith(root + path.sep)) {
+    return { deleted: false, error: 'Đường dẫn không hợp lệ.' };
+  }
+  try {
+    if (fs.existsSync(resolved)) {
+      fs.unlinkSync(resolved);
+    }
+    const list = readSegmentsIndex().filter(
+      (s) => !s.permanentPath || path.resolve(s.permanentPath) !== resolved
+    );
+    writeSegmentsIndex(list);
+    return { deleted: true, stats: getHighlightsStorageStats() };
+  } catch {
+    return { deleted: false };
+  }
+});
+
+ipcMain.handle('capture:cleanup-storage', (_event, payload) => {
+  const protectedMatchIds = Array.isArray(payload?.pinnedMatchIds) ? payload.pinnedMatchIds : [];
+  if (payload?.clearUnpinned) {
+    const protectedSet = new Set(protectedMatchIds);
+    const stats = getHighlightsStorageStats();
+    let deletedCount = 0;
+    for (const f of stats.files) {
+      if (f.attachedMatchId && protectedSet.has(f.attachedMatchId)) continue;
+      try {
+        fs.unlinkSync(f.filePath);
+        deletedCount += 1;
+      } catch {
+        // Bo qua
+      }
+    }
+    return { deletedCount, stats: getHighlightsStorageStats() };
+  }
+  const deletedCount = enforceHighlightsStorageLimit(protectedMatchIds);
+  return { deletedCount, stats: getHighlightsStorageStats() };
 });
 
 ipcMain.handle('capture:relaunch-app', () => {
@@ -796,8 +983,9 @@ ipcMain.handle('capture:promote-f9-highlight', (_event, payload) => {
   }
 
   if (savedFilePath) {
+    enforceHighlightsStorageLimit([]);
     showDesktopNotification(
-      'TacticalReplayAI - Đã cắt Highlight (F9)',
+      `TacticalReplayAI - Đã cắt Highlight (${runtimeCaptureState.hotkey})`,
       `Đã lưu clip ${savedFileName} vào thư mục Videos/TacticalReplayAI.`
     );
     return {
@@ -813,7 +1001,7 @@ ipcMain.handle('capture:promote-f9-highlight', (_event, payload) => {
 });
 
 ipcMain.handle('capture:match-kill-segments', (_event, payload) => {
-  const { matchId, gameType, matchStartMs, matchEndMs, killEpochsMs } = payload || {};
+  const { matchId, gameType, matchStartMs, matchEndMs, killEpochsMs, pinnedMatchIds } = payload || {};
   if (!matchId || !gameType || !matchStartMs) return { clips: [] };
 
   const safeMatchId = String(matchId).replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -832,6 +1020,20 @@ ipcMain.handle('capture:match-kill-segments', (_event, payload) => {
       continue;
     }
 
+    if (seg.promoted && seg.attachedMatchId === matchId) {
+      if (seg.permanentPath && fs.existsSync(seg.permanentPath)) {
+        promotedClips.push({
+          filePath: seg.permanentPath,
+          fileName: seg.fileName || path.basename(seg.permanentPath),
+          durationSec: seg.durationSec || 25,
+          recordedAt: new Date(seg.endMs).toISOString(),
+          source: seg.isF9 ? 'F9' : 'KILL',
+        });
+      }
+      updatedList.push(seg);
+      continue;
+    }
+
     // Gan clip F9 duoc bam trong thoi gian tran dau
     if (seg.isF9 && seg.promoted && !seg.attachedMatchId) {
       if (seg.endMs >= winStartLimit && seg.startMs <= winEndLimit && seg.permanentPath && fs.existsSync(seg.permanentPath)) {
@@ -841,6 +1043,7 @@ ipcMain.handle('capture:match-kill-segments', (_event, payload) => {
           fileName: seg.fileName || path.basename(seg.permanentPath),
           durationSec: seg.durationSec || 25,
           recordedAt: new Date(seg.endMs).toISOString(),
+          source: 'F9',
         });
       }
       updatedList.push(seg);
@@ -881,6 +1084,7 @@ ipcMain.handle('capture:match-kill-segments', (_event, payload) => {
           fileName: clipName,
           durationSec: seg.durationSec || 25,
           recordedAt: new Date(seg.endMs).toISOString(),
+          source: 'KILL',
         });
         updatedList.push(seg);
         continue;
@@ -903,6 +1107,9 @@ ipcMain.handle('capture:match-kill-segments', (_event, payload) => {
   }
 
   writeSegmentsIndex(updatedList);
+  if (promotedClips.length > 0) {
+    enforceHighlightsStorageLimit(Array.isArray(pinnedMatchIds) ? pinnedMatchIds : []);
+  }
   return { clips: promotedClips };
 });
 

@@ -488,3 +488,137 @@ export function parsePubgTelemetryToRounds(
 
   return Array.from(roundsMap.values()).sort((a, b) => a.roundNumber - b.roundNumber);
 }
+
+export interface PubgMapPoint {
+  x: number;
+  y: number;
+  tMs: number;
+  phase?: number;
+  label?: string;
+}
+
+export interface PubgSafeZoneCircle {
+  phase: number;
+  x: number;
+  y: number;
+  radius: number;
+}
+
+export interface PubgMapTelemetrySummary {
+  mapRawName: string;
+  mapSizeCm: number;
+  path: PubgMapPoint[];
+  kills: PubgMapPoint[];
+  deaths: PubgMapPoint[];
+  safeZones: PubgSafeZoneCircle[];
+}
+
+const PUBG_MAP_SIZE_CM: Record<string, number> = {
+  Baltic_Main: 816000,
+  Erangel_Main: 816000,
+  Desert_Main: 816000,
+  Tiger_Main: 816000,
+  Kiki_Main: 816000,
+  Neon_Main: 816000,
+  Vikendi_Main: 816000,
+  DihorOtok_Main: 612000,
+  Savage_Main: 408000,
+  Chimera_Main: 306000,
+  Summerland_Main: 204000,
+};
+
+export function extractPubgMapTelemetry(
+  telemetryEvents: any[],
+  targetPlayerName: string
+): PubgMapTelemetrySummary {
+  const matchStartLog = telemetryEvents.find((e) => e._T === 'LogMatchStart');
+  const matchStartEpoch = matchStartLog?._D ? new Date(matchStartLog._D).getTime() : 0;
+  const mapRawName = String(matchStartLog?.mapName || 'Unknown');
+  let mapSizeCm = PUBG_MAP_SIZE_CM[mapRawName] || 816000;
+
+  const rawPath: PubgMapPoint[] = [];
+  const kills: PubgMapPoint[] = [];
+  const deaths: PubgMapPoint[] = [];
+  const zonesByPhase = new Map<number, PubgSafeZoneCircle>();
+
+  let currentPhase = 1;
+  let lastSampleMs = -999999;
+
+  for (const ev of telemetryEvents) {
+    const evTime = ev._D ? Math.max(0, new Date(ev._D).getTime() - matchStartEpoch) : 0;
+
+    if (ev._T === 'LogPhaseChange' && typeof ev.phase === 'number') {
+      currentPhase = Math.max(1, ev.phase);
+    }
+
+    if (ev._T === 'LogGameStatePeriodic' && ev.gameState?.safetyZoneRadius > 0) {
+      const gs = ev.gameState;
+      const sx = Number(gs.safetyZonePosition?.x || 0);
+      const sy = Number(gs.safetyZonePosition?.y || 0);
+      const sr = Number(gs.safetyZoneRadius || 0);
+      if (sx > 0 && sy > 0 && sr > 0 && !zonesByPhase.has(currentPhase)) {
+        zonesByPhase.set(currentPhase, { phase: currentPhase, x: sx, y: sy, radius: sr });
+      }
+    }
+
+    if (ev._T === 'LogPlayerPosition' && ev.character?.name === targetPlayerName) {
+      const lx = Number(ev.character?.location?.x);
+      const ly = Number(ev.character?.location?.y);
+      if (Number.isFinite(lx) && Number.isFinite(ly) && (lx > 0 || ly > 0)) {
+        if (lx > mapSizeCm || ly > mapSizeCm) {
+          mapSizeCm = 816000;
+        }
+        if (evTime - lastSampleMs >= 15000 && rawPath.length < 160) {
+          lastSampleMs = evTime;
+          rawPath.push({
+            x: Math.round(lx),
+            y: Math.round(ly),
+            tMs: evTime,
+            phase: currentPhase,
+          });
+        }
+      }
+    }
+
+    if (ev._T === 'LogPlayerKillV2') {
+      if (ev.killer?.name === targetPlayerName) {
+        const loc = ev.victim?.location || ev.killer?.location;
+        const kx = Number(loc?.x);
+        const ky = Number(loc?.y);
+        if (Number.isFinite(kx) && Number.isFinite(ky) && (kx > 0 || ky > 0)) {
+          const weaponInfo = resolvePubgWeapon(ev.killerDamageInfo?.damageCauserName);
+          kills.push({
+            x: Math.round(kx),
+            y: Math.round(ky),
+            tMs: evTime,
+            phase: currentPhase,
+            label: `${ev.victim?.name || 'Enemy'}${weaponInfo ? ` (${weaponInfo.name})` : ''}`,
+          });
+        }
+      }
+
+      if (ev.victim?.name === targetPlayerName) {
+        const dx = Number(ev.victim?.location?.x);
+        const dy = Number(ev.victim?.location?.y);
+        if (Number.isFinite(dx) && Number.isFinite(dy) && (dx > 0 || dy > 0)) {
+          deaths.push({
+            x: Math.round(dx),
+            y: Math.round(dy),
+            tMs: evTime,
+            phase: currentPhase,
+            label: ev.killer?.name ? `Hạ bởi ${ev.killer.name}` : 'Bị hạ gục',
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    mapRawName,
+    mapSizeCm,
+    path: rawPath,
+    kills,
+    deaths,
+    safeZones: Array.from(zonesByPhase.values()).sort((a, b) => a.phase - b.phase),
+  };
+}

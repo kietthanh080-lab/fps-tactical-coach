@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS matches (
   local_video_filename VARCHAR(255) NULL,
   cloud_video_url TEXT NULL,
   duration_sec INT DEFAULT 0,
+  is_pinned TINYINT(1) NOT NULL DEFAULT 0,
   played_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_matches_user_game_played (user_id, game_type, played_at),
   CONSTRAINT fk_matches_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -99,4 +100,11 @@ CREATE TABLE IF NOT EXISTS squad_members (
   user_id INT NOT NULL,
   joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (squad_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS match_telemetry (
+  match_id VARCHAR(128) PRIMARY KEY,
+  map_size_cm INT NOT NULL DEFAULT 816000,
+  telemetry_json LONGTEXT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
