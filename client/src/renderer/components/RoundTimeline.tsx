@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Crosshair, Funnel, WarningCircle } from '@phosphor-icons/react';
+import { useI18n } from '../i18n';
 
 export interface WeaponUsageStatUI {
   weaponName: string;
@@ -51,6 +52,7 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
   selectedRound,
   onSelectRound,
 }) => {
+  const { tr } = useI18n();
   const [filter, setFilter] = useState<RoundFilter>('ALL');
   const isValo = gameType === 'VALORANT';
 
@@ -65,15 +67,19 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
 
   return (
     <section
-      aria-label={isValo ? 'Ma tran dien bien Round' : 'Ma tran dien bien Phase'}
-      className="border border-[#232B3B] bg-[#10141C] rounded-[4px] p-4 space-y-3"
+      aria-label={
+        isValo
+          ? tr('Round Timeline Matrix', 'Ma trận diễn biến Round')
+          : tr('Safe Zone Phase Matrix', 'Ma trận diễn biến Phase')
+      }
+      className="border border-[#232B3B] theme-surface-card rounded-[4px] p-4 space-y-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232B3B] pb-3">
         <div className="flex items-center gap-2.5">
           <div
             className={`h-7 w-7 rounded-[2px] flex items-center justify-center border ${
               isValo
-                ? 'bg-[#FF4655]/10 border-[#FF4655]/40 text-[#FF4655]'
+                ? 'bg-[#FF4655]/10 border-[#FF4655]/40 text-[#FF4655] theme-cut-valo'
                 : 'bg-[#E59A23]/10 border-[#E59A23]/40 text-[#E59A23]'
             }`}
           >
@@ -81,10 +87,15 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
           </div>
           <div>
             <h3 className="font-display text-sm font-bold tracking-tight text-[#EEF2F6]">
-              {isValo ? 'Diễn biến từng Round' : 'Diễn biến từng Giai đoạn Vòng Bo (Phase)'}
+              {isValo
+                ? tr('Round-by-Round Timeline', 'Diễn biến từng Round')
+                : tr('Safe Zone Phase Timeline', 'Diễn biến từng Giai đoạn Vòng Bo (Phase)')}
             </h3>
             <p className="text-[11px] text-[#94A3B8] leading-snug">
-              Chọn mốc để tua video và xem phân tích vũ khí, lỗi vị trí bên phải
+              {tr(
+                'Click any segment to jump replay markers and inspect weapon/positioning stats',
+                'Chọn mốc để tua video và xem phân tích vũ khí, lỗi vị trí bên phải'
+              )}
             </p>
           </div>
         </div>
@@ -101,7 +112,7 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
                 : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
             }`}
           >
-            Tất cả ({rounds.length})
+            {tr('All', 'Tất cả')} ({rounds.length})
           </button>
           <button
             type="button"
@@ -113,7 +124,9 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
             }`}
           >
             <Crosshair size={12} weight="bold" aria-hidden="true" />
-            <span>Có Kill ({killRoundsCount})</span>
+            <span>
+              {tr('Kills', 'Có Kill')} ({killRoundsCount})
+            </span>
           </button>
           <button
             type="button"
@@ -125,7 +138,9 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
             }`}
           >
             <WarningCircle size={12} weight="bold" aria-hidden="true" />
-            <span>Rút kinh nghiệm ({mistakeRoundsCount})</span>
+            <span>
+              {tr('Review', 'Rút kinh nghiệm')} ({mistakeRoundsCount})
+            </span>
           </button>
         </div>
       </div>
@@ -133,8 +148,14 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
       {filteredRounds.length === 0 ? (
         <div className="border border-dashed border-[#232B3B] bg-[#0A0D12]/60 rounded-[2px] py-6 text-center text-xs text-[#64748B]">
           {rounds.length === 0
-            ? 'Trận đấu này chưa có dữ liệu chi tiết từng giai đoạn.'
-            : 'Không có giai đoạn nào khớp bộ lọc đang chọn.'}
+            ? tr(
+                'No detailed round/phase telemetry recorded for this match yet.',
+                'Trận đấu này chưa có dữ liệu chi tiết từng giai đoạn.'
+              )
+            : tr(
+                'No segments match the active filter.',
+                'Không có giai đoạn nào khớp bộ lọc đang chọn.'
+              )}
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-60 overflow-y-auto tactical-scrollbar pr-1">
@@ -152,8 +173,8 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
                 className={`relative p-2.5 rounded-[2px] border text-left transition duration-150 active:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#38BDF8] space-y-1.5 ${
                   isSelected
                     ? isValo
-                      ? 'bg-[#FF4655]/12 border-[#FF4655]'
-                      : 'bg-[#E59A23]/12 border-[#E59A23]'
+                      ? 'bg-[#FF4655]/14 border-[#FF4655]'
+                      : 'bg-[#E59A23]/14 border-[#E59A23]'
                     : 'bg-[#0A0D12] border-[#232B3B] hover:border-[#334155] hover:bg-[#171D28]'
                 }`}
               >
@@ -183,7 +204,7 @@ export const RoundTimeline: React.FC<RoundTimelineProps> = ({
                   <span className="truncate font-mono">{r.economyType}</span>
                   {hasMistakes && (
                     <span className="text-[#E59A23] font-semibold shrink-0">
-                      {r.mistakes.length} lưu ý
+                      {r.mistakes.length} {tr('note(s)', 'lưu ý')}
                     </span>
                   )}
                 </div>

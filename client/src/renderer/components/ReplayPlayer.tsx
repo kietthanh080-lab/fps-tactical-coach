@@ -2,8 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowCounterClockwise,
   ArrowUpRight,
+  BookmarkSimple,
+  Camera,
   Circle,
   FastForward,
+  FilmStrip,
+  FolderOpen,
   Pause,
   PencilSimple,
   Play,
@@ -11,11 +15,16 @@ import {
   Trash,
   UploadSimple,
   VideoCamera,
+  X,
 } from '@phosphor-icons/react';
-import { AnalyzedRoundUI, RoundTimeline } from './RoundTimeline';
+import { useI18n } from '../i18n';
+import {
+  getMatchBookmarks,
+  ReplayBookmark,
+  saveMatchBookmarks,
+} from '../services/appSettings';
 import { uploadMatchHighlight } from '../services/localDb';
-
-import { Camera, FilmStrip, FolderOpen } from '@phosphor-icons/react';
+import { AnalyzedRoundUI, RoundTimeline } from './RoundTimeline';
 
 export interface ReplayClipItem {
   id?: string;
@@ -40,6 +49,7 @@ interface ReplayPlayerProps {
   onSelectRound: (roundNumber: number) => void;
   onHighlightSaved?: (cloudUrl: string) => void;
   onOpenHighlightsFolder?: () => void;
+  dataRevision?: number;
 }
 
 type DrawTool = 'arrow' | 'circle' | 'pen';
@@ -59,17 +69,10 @@ interface TimelineMarker {
   id: string;
   roundNumber: number;
   timestampSec: number;
-  type: 'kill' | 'death' | 'objective';
+  type: 'kill' | 'death' | 'objective' | 'bookmark';
   label: string;
   isExact: boolean;
 }
-
-const TACTICAL_COLORS = [
-  { name: 'Đỏ (Vị trí địch / Cảnh báo)', value: '#EF4444' },
-  { name: 'Xanh lá (Hướng đẩy / Entry)', value: '#10B981' },
-  { name: 'Vàng (Smoke / Flash / Bo)', value: '#E59A23' },
-  { name: 'Xanh dương (Góc kê tâm)', value: '#38BDF8' },
-];
 
 const formatTime = (seconds: number): string => {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -94,7 +97,9 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   onSelectRound,
   onHighlightSaved,
   onOpenHighlightsFolder,
+  dataRevision = 0,
 }) => {
+  const { tr } = useI18n();
   const isValo = gameType === 'VALORANT';
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -114,11 +119,36 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [hoveredMarker, setHoveredMarker] = useState<TimelineMarker | null>(null);
 
+  const [bookmarks, setBookmarks] = useState<ReplayBookmark[]>([]);
+  const [bookmarkLabelInput, setBookmarkLabelInput] = useState('');
+
   const [drawMode, setDrawMode] = useState(false);
   const [activeTool, setActiveTool] = useState<DrawTool>('arrow');
   const [activeColor, setActiveColor] = useState<string>('#EF4444');
   const [shapesByRound, setShapesByRound] = useState<Record<number, DrawShape[]>>({});
   const [currentShape, setCurrentShape] = useState<DrawShape | null>(null);
+
+  const tacticalColors = useMemo(
+    () => [
+      {
+        name: tr('Red (Enemy / Threat)', 'Đỏ (Vị trí địch / Cảnh báo)'),
+        value: '#EF4444',
+      },
+      {
+        name: tr('Green (Entry / Push Path)', 'Xanh lá (Hướng đẩy / Entry)'),
+        value: '#10B981',
+      },
+      {
+        name: tr('Amber (Utility / Safe Zone)', 'Vàng (Smoke / Flash / Bo)'),
+        value: '#E59A23',
+      },
+      {
+        name: tr('Cyan (Crosshair Hold / Info)', 'Xanh dương (Góc kê tâm)'),
+        value: '#38BDF8',
+      },
+    ],
+    [tr]
+  );
 
   const shapes = shapesByRound[selectedRound] || [];
   const shapesRef = useRef<DrawShape[]>([]);
@@ -168,11 +198,15 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    setBookmarkLabelInput('');
 
     if (!matchId) {
       setShapesByRound({});
+      setBookmarks([]);
       return;
     }
+
+    setBookmarks(getMatchBookmarks(matchId));
 
     try {
       const saved = localStorage.getItem(getTelestratorStorageKey(matchId));
@@ -180,7 +214,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     } catch {
       setShapesByRound({});
     }
-  }, [matchId]);
+  }, [matchId, dataRevision]);
 
   useEffect(() => {
     if (!matchId) return;
@@ -192,7 +226,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
         localStorage.removeItem(getTelestratorStorageKey(matchId));
       }
     } catch {
-      // Bỏ qua nếu localStorage đầy
+      // Ignore storage quota errors
     }
   }, [matchId, shapesByRound]);
 
@@ -334,7 +368,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     outCtx.fillStyle = '#EEF2F6';
     outCtx.font = 'bold 12px sans-serif';
     outCtx.fillText(
-      `FPS Coach | ${matchTitle || gameType} | ${isValo ? `R${selectedRound}` : `P${selectedRound}`}`.slice(0, 46),
+      `TacticalReplayAI | ${matchTitle || gameType} | ${isValo ? `R${selectedRound}` : `P${selectedRound}`}`.slice(0, 48),
       20,
       exportHeight - 20
     );
@@ -350,7 +384,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
     let pngBlob = await exportBlob(outCanvas);
     if (!pngBlob) {
-      // Fallback when remote video lacks CORS headers: still export tactical drawings cleanly
       const fallbackCanvas = document.createElement('canvas');
       fallbackCanvas.width = exportWidth;
       fallbackCanvas.height = exportHeight;
@@ -363,7 +396,14 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
         }
         fbCtx.fillStyle = '#94A3B8';
         fbCtx.font = '13px sans-serif';
-        fbCtx.fillText('So do Telestrator (Video cloud khong cho phep chup frame truc tiep)', 20, 32);
+        fbCtx.fillText(
+          tr(
+            'Telestrator Overlay (Remote video restricts direct frame capture)',
+            'So do Telestrator (Video cloud khong cho phep chup frame truc tiep)'
+          ),
+          20,
+          32
+        );
         pngBlob = await exportBlob(fallbackCanvas);
       }
     }
@@ -395,7 +435,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
     setCopyStatus('downloaded');
     setTimeout(() => setCopyStatus('idle'), 2500);
-  }, [gameType, isValo, matchId, matchTitle, selectedRound]);
+  }, [gameType, isValo, matchId, matchTitle, selectedRound, tr]);
 
   const seekTo = useCallback((targetSec: number) => {
     const video = videoRef.current;
@@ -405,6 +445,19 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     video.currentTime = clamped;
     setCurrentTime(clamped);
   }, []);
+
+  const stepFrame = useCallback(
+    (deltaSec: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (!video.paused) {
+        video.pause();
+        setIsPlaying(false);
+      }
+      seekTo(video.currentTime + deltaSec);
+    },
+    [seekTo]
+  );
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -418,127 +471,188 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     }
   }, []);
 
+  const handleAddBookmark = useCallback(() => {
+    if (!matchId || !activeVideoUrl) return;
+    const rawTime = videoRef.current?.currentTime ?? currentTime;
+    const roundedSec = Math.max(0, Math.round(rawTime * 10) / 10);
+    const customLabel = bookmarkLabelInput.trim();
+    const defaultPrefix = isValo ? `R${selectedRound}` : `P${selectedRound}`;
+    const label = customLabel || `${defaultPrefix} #${bookmarks.length + 1}`;
+
+    const next = saveMatchBookmarks(matchId, [
+      ...bookmarks,
+      {
+        id: `bm-${Date.now()}`,
+        timeSec: roundedSec,
+        label,
+      },
+    ]);
+    setBookmarks(next);
+    setBookmarkLabelInput('');
+  }, [activeVideoUrl, bookmarkLabelInput, bookmarks, currentTime, isValo, matchId, selectedRound]);
+
+  const handleRemoveBookmark = useCallback(
+    (id: string) => {
+      if (!matchId) return;
+      const next = saveMatchBookmarks(
+        matchId,
+        bookmarks.filter((b) => b.id !== id)
+      );
+      setBookmarks(next);
+    },
+    [bookmarks, matchId]
+  );
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (!activeVideoUrl) return;
 
-      if (e.code === 'Space' && activeVideoUrl) {
+      if (e.code === 'Space') {
         e.preventDefault();
         togglePlay();
-      } else if (e.code === 'ArrowLeft' && activeVideoUrl) {
+      } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
         seekTo((videoRef.current?.currentTime || 0) - 5);
-      } else if (e.code === 'ArrowRight' && activeVideoUrl) {
+      } else if (e.code === 'ArrowRight') {
         e.preventDefault();
         seekTo((videoRef.current?.currentTime || 0) + 5);
-      } else if (e.key.toLowerCase() === 'd' && activeVideoUrl) {
+      } else if (e.key === ',') {
+        e.preventDefault();
+        stepFrame(-0.1);
+      } else if (e.key === '.') {
+        e.preventDefault();
+        stepFrame(0.1);
+      } else if (e.key.toLowerCase() === 'd') {
         setDrawMode((prev) => !prev);
+      } else if (e.key.toLowerCase() === 'b' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        handleAddBookmark();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeVideoUrl, togglePlay, seekTo]);
+  }, [activeVideoUrl, handleAddBookmark, seekTo, stepFrame, togglePlay]);
 
-  // Tinh toan moc thoi gian that tu startTimestampMs va events (KILL / DEATH / SPIKE_PLANTED)
   const timelineMarkers = useMemo<TimelineMarker[]>(() => {
-    if (duration <= 0 || rounds.length === 0) return [];
-
-    const hasRealRoundStart = rounds.some(
-      (r, idx) =>
-        (typeof r.startTimestampMs === 'number' && r.startTimestampMs > 0 && idx > 0) ||
-        typeof r.timestampSec === 'number' ||
-        typeof r.startTimeSec === 'number'
-    );
+    if (duration <= 0) return [];
 
     const markers: TimelineMarker[] = [];
 
-    rounds.forEach((r, index) => {
-      const prefix = isValo ? `Round ${r.roundNumber}` : `Phase ${r.roundNumber}`;
-
-      // 1. Uu tien cac moc su kien KILL / DEATH / SPIKE_PLANTED co timestampMs that trong video
-      const actionEvents = (r.events || []).filter(
-        (ev) =>
-          (ev.type === 'KILL' || ev.type === 'DEATH' || ev.type === 'SPIKE_PLANTED') &&
-          typeof ev.timestampMs === 'number' &&
-          ev.timestampMs >= 0 &&
-          ev.timestampMs / 1000 <= duration + 2
+    if (rounds.length > 0) {
+      const hasRealRoundStart = rounds.some(
+        (r, idx) =>
+          (typeof r.startTimestampMs === 'number' && r.startTimestampMs > 0 && idx > 0) ||
+          typeof r.timestampSec === 'number' ||
+          typeof r.startTimeSec === 'number'
       );
 
-      if (actionEvents.length > 0) {
-        actionEvents.forEach((ev, evIdx) => {
-          const evSec = Math.min(duration, Math.max(0, ev.timestampMs / 1000));
-          const type: TimelineMarker['type'] =
-            ev.type === 'KILL' ? 'kill' : ev.type === 'DEATH' ? 'death' : 'objective';
+      rounds.forEach((r, index) => {
+        const prefix = isValo ? `Round ${r.roundNumber}` : `Phase ${r.roundNumber}`;
 
-          const weapon = ev.payload?.weapon ? ` (${String(ev.payload.weapon)})` : '';
-          const dist = ev.payload?.distanceMeters
-            ? ` ${String(ev.payload.distanceMeters)}m`
-            : '';
-          const label =
-            ev.type === 'KILL'
-              ? `${prefix}: Hạ gục${weapon}${dist}`
-              : ev.type === 'DEATH'
-              ? `${prefix}: Bị hạ gục${weapon}`
-              : `${prefix}: Đặt Spike`;
+        const actionEvents = (r.events || []).filter(
+          (ev) =>
+            (ev.type === 'KILL' || ev.type === 'DEATH' || ev.type === 'SPIKE_PLANTED') &&
+            typeof ev.timestampMs === 'number' &&
+            ev.timestampMs >= 0 &&
+            ev.timestampMs / 1000 <= duration + 2
+        );
 
-          markers.push({
-            id: `r${r.roundNumber}-ev${evIdx}`,
-            roundNumber: r.roundNumber,
-            timestampSec: evSec,
-            type,
-            label,
-            isExact: true,
+        if (actionEvents.length > 0) {
+          actionEvents.forEach((ev, evIdx) => {
+            const evSec = Math.min(duration, Math.max(0, ev.timestampMs / 1000));
+            const type: TimelineMarker['type'] =
+              ev.type === 'KILL' ? 'kill' : ev.type === 'DEATH' ? 'death' : 'objective';
+
+            const weapon = ev.payload?.weapon ? ` (${String(ev.payload.weapon)})` : '';
+            const dist = ev.payload?.distanceMeters
+              ? ` ${String(ev.payload.distanceMeters)}m`
+              : '';
+            const label =
+              ev.type === 'KILL'
+                ? `${prefix}: ${tr('Kill', 'Hạ gục')}${weapon}${dist}`
+                : ev.type === 'DEATH'
+                  ? `${prefix}: ${tr('Eliminated', 'Bị hạ gục')}${weapon}`
+                  : `${prefix}: ${tr('Spike Planted', 'Đặt Spike')}`;
+
+            markers.push({
+              id: `r${r.roundNumber}-ev${evIdx}`,
+              roundNumber: r.roundNumber,
+              timestampSec: evSec,
+              type,
+              label,
+              isExact: true,
+            });
           });
+          return;
+        }
+
+        const explicitSec =
+          r.timestampSec ??
+          r.startTimeSec ??
+          (typeof r.startTimestampMs === 'number' && hasRealRoundStart
+            ? r.startTimestampMs / 1000
+            : undefined);
+
+        const isExact =
+          typeof explicitSec === 'number' && explicitSec >= 0 && explicitSec <= duration + 5;
+        const resolvedSec = isExact
+          ? Math.min(duration, Math.max(0, explicitSec))
+          : ((index + 0.5) / rounds.length) * duration;
+
+        const type: TimelineMarker['type'] =
+          r.kills > 0 ? 'kill' : r.deaths > 0 ? 'death' : 'objective';
+
+        const label =
+          r.kills > 0
+            ? `${prefix}: ${r.kills} Kill (${r.damageDealt} DMG)`
+            : r.deaths > 0
+              ? `${prefix}: ${tr('Eliminated', 'Bị hạ gục')} (${r.result})`
+              : `${prefix}: ${r.result} - ${r.economyType}`;
+
+        markers.push({
+          id: `r${r.roundNumber}`,
+          roundNumber: r.roundNumber,
+          timestampSec: resolvedSec,
+          type,
+          label,
+          isExact,
         });
-        return;
-      }
-
-      // 2. Neu chua co event rieng, dung startTimestampMs hoac timestampSec that cua Round/Phase
-      const explicitSec =
-        r.timestampSec ??
-        r.startTimeSec ??
-        (typeof r.startTimestampMs === 'number' && hasRealRoundStart
-          ? r.startTimestampMs / 1000
-          : undefined);
-
-      const isExact = typeof explicitSec === 'number' && explicitSec >= 0 && explicitSec <= duration + 5;
-      const resolvedSec = isExact
-        ? Math.min(duration, Math.max(0, explicitSec))
-        : ((index + 0.5) / rounds.length) * duration;
-
-      const type: TimelineMarker['type'] =
-        r.kills > 0 ? 'kill' : r.deaths > 0 ? 'death' : 'objective';
-
-      const label =
-        r.kills > 0
-          ? `${prefix}: ${r.kills} Kill (${r.damageDealt} DMG)`
-          : r.deaths > 0
-          ? `${prefix}: Bị hạ gục (${r.result})`
-          : `${prefix}: ${r.result} - ${r.economyType}`;
-
-      markers.push({
-        id: `r${r.roundNumber}`,
-        roundNumber: r.roundNumber,
-        timestampSec: resolvedSec,
-        type,
-        label,
-        isExact,
       });
+    }
+
+    bookmarks.forEach((bm) => {
+      if (bm.timeSec <= duration + 1) {
+        markers.push({
+          id: bm.id,
+          roundNumber: selectedRound,
+          timestampSec: Math.min(duration, Math.max(0, bm.timeSec)),
+          type: 'bookmark',
+          label: `${tr('Bookmark', 'Dấu trang')}: ${bm.label}`,
+          isExact: true,
+        });
+      }
     });
 
     return markers;
-  }, [rounds, duration, isValo]);
+  }, [bookmarks, duration, isValo, rounds, selectedRound, tr]);
 
-  const handleSelectRoundAndSeek = (roundNumber: number, explicitSec?: number) => {
+  const handleSelectRoundAndSeek = (
+    roundNumber: number,
+    explicitSec?: number,
+    exactBookmark = false
+  ) => {
     onSelectRound(roundNumber);
     if (!videoRef.current) return;
     if (typeof explicitSec === 'number') {
-      seekTo(Math.max(0, explicitSec - 2));
+      seekTo(Math.max(0, exactBookmark ? explicitSec : explicitSec - 2));
       return;
     }
-    const marker = timelineMarkers.find((m) => m.roundNumber === roundNumber);
+    const marker = timelineMarkers.find(
+      (m) => m.roundNumber === roundNumber && m.type !== 'bookmark'
+    );
     if (marker) {
       seekTo(Math.max(0, marker.timestampSec - 2));
     }
@@ -638,8 +752,14 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     } catch (err: any) {
       setUploadError(
         err?.message
-          ? `Chỉ đang xem tạm cục bộ (chưa lưu lên server: ${err.message})`
-          : 'Chỉ đang xem tạm cục bộ, không thể tải video lên máy chủ.'
+          ? tr(
+              `Playing local preview only (cloud upload skipped: ${err.message})`,
+              `Chỉ đang xem tạm cục bộ (chưa lưu lên server: ${err.message})`
+            )
+          : tr(
+              'Playing local preview only; unable to upload video to server.',
+              'Chỉ đang xem tạm cục bộ, không thể tải video lên máy chủ.'
+            )
       );
     } finally {
       setUploading(false);
@@ -650,6 +770,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const getDotClass = (type: TimelineMarker['type']) => {
     if (type === 'kill') return 'bg-[#10B981] ring-[#10B981]/35';
     if (type === 'death') return 'bg-[#F43F5E] ring-[#F43F5E]/35';
+    if (type === 'bookmark') return 'bg-[#38BDF8] ring-[#38BDF8]/40';
     return 'bg-[#E59A23] ring-[#E59A23]/35';
   };
 
@@ -657,8 +778,8 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-[4px] border border-[#232B3B] bg-[#10141C] p-4 space-y-3">
-        {/* Thanh tieu de va Telestrator */}
+      <div className="theme-surface-card rounded-[4px] border border-[#232B3B] bg-[#10141C] p-4 space-y-3">
+        {/* Header & Telestrator Controls */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232B3B] pb-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <span
@@ -667,7 +788,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               }`}
             />
             <h2 className="font-display text-base font-bold text-[#EEF2F6] truncate">
-              {matchTitle || 'Trình phát Replay & Phân tích Chiến thuật'}
+              {matchTitle || tr('Tactical Replay Theater', 'Trình phát Replay & Phân tích Chiến thuật')}
             </h2>
           </div>
 
@@ -675,7 +796,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
             {hasSelectedMatch && (
               <>
                 <label htmlFor="highlight-file-upload" className="sr-only">
-                  Chọn video highlight
+                  {tr('Select highlight video file', 'Chọn video highlight')}
                 </label>
                 <input
                   id="highlight-file-upload"
@@ -694,10 +815,10 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   <UploadSimple size={14} weight="bold" aria-hidden="true" />
                   <span>
                     {uploading
-                      ? 'Đang tải lên...'
+                      ? tr('Uploading...', 'Đang tải lên...')
                       : activeVideoUrl
-                      ? 'Đổi video Highlight'
-                      : 'Gắn video Highlight'}
+                        ? tr('Change Highlight', 'Đổi video Highlight')
+                        : tr('Attach Highlight', 'Gắn video Highlight')}
                   </span>
                 </button>
               </>
@@ -707,11 +828,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               <button
                 type="button"
                 onClick={onOpenHighlightsFolder}
-                title="Mở thư mục lưu clip highlight trên máy"
+                title={tr('Open local highlight clips folder', 'Mở thư mục lưu clip highlight trên máy')}
                 className="inline-flex items-center gap-1.5 rounded-[2px] border border-[#232B3B] bg-[#171D28] px-2.5 py-1.5 text-xs font-medium text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B] transition duration-150"
               >
                 <FolderOpen size={14} weight="bold" aria-hidden="true" />
-                <span>Mở thư mục</span>
+                <span>{tr('Open Folder', 'Mở thư mục')}</span>
               </button>
             )}
 
@@ -721,7 +842,10 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 onClick={() => {
                   void handleCopyScreenshot();
                 }}
-                title="Chụp frame video kèm nét vẽ Telestrator vào clipboard để dán Discord"
+                title={tr(
+                  'Copy current video frame + Telestrator drawings to clipboard',
+                  'Chụp frame video kèm nét vẽ Telestrator vào clipboard để dán Discord'
+                )}
                 className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1.5 text-xs font-medium transition duration-150 ${
                   copyStatus === 'copied' || copyStatus === 'downloaded'
                     ? 'bg-[#10B981]/15 border-[#10B981] text-[#10B981]'
@@ -733,12 +857,12 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 <Camera size={14} weight="bold" aria-hidden="true" />
                 <span>
                   {copyStatus === 'copied'
-                    ? 'Đã copy ảnh'
+                    ? tr('Frame Copied', 'Đã copy ảnh')
                     : copyStatus === 'downloaded'
-                      ? 'Đã tải PNG'
+                      ? tr('PNG Saved', 'Đã tải PNG')
                       : copyStatus === 'error'
-                        ? 'Lỗi chụp ảnh'
-                        : 'Copy ảnh'}
+                        ? tr('Capture Failed', 'Lỗi chụp ảnh')
+                        : tr('Copy Frame', 'Copy ảnh')}
                 </span>
               </button>
             )}
@@ -747,7 +871,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               <button
                 type="button"
                 onClick={() => setDrawMode((prev) => !prev)}
-                title="Phím tắt: D"
+                title={tr('Shortcut: D', 'Phím tắt: D')}
                 className={`inline-flex items-center gap-1.5 rounded-[2px] border px-3 py-1.5 text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                   drawMode
                     ? isValo
@@ -759,21 +883,26 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 <PencilSimple size={14} weight="bold" aria-hidden="true" />
                 <span>
                   {drawMode
-                    ? `Đang vẽ ${isValo ? `R${selectedRound}` : `P${selectedRound}`} (D)`
-                    : 'Vẽ chiến thuật (D)'}
+                    ? tr(
+                        `Drawing ${isValo ? `R${selectedRound}` : `P${selectedRound}`} (D)`,
+                        `Đang vẽ ${isValo ? `R${selectedRound}` : `P${selectedRound}`} (D)`
+                      )
+                    : tr('Telestrator (D)', 'Vẽ chiến thuật (D)')}
                 </span>
               </button>
             )}
           </div>
         </div>
 
-        {/* Multi-Clip Gallery trong cung 1 tran */}
+        {/* Multi-Clip Gallery */}
         {clipList.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] px-3 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-[#94A3B8] mr-1">
                 <FilmStrip size={14} weight="bold" aria-hidden="true" />
-                <span>{clipList.length} Clip trong trận:</span>
+                <span>
+                  {tr(`${clipList.length} Clips in Match:`, `${clipList.length} Clip trong trận:`)}
+                </span>
               </span>
               {clipList.map((clip, idx) => {
                 const isSelected = safeClipIdx === idx && !localPreviewSrc;
@@ -791,7 +920,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     }`}
                   >
                     <span>
-                      {clip.source === 'KILL' ? 'Kill' : 'Phím tắt'} #{idx + 1}
+                      {clip.source === 'KILL' ? 'Kill' : tr('Hotkey', 'Phím tắt')} #{idx + 1}
                     </span>
                     {typeof clip.durationSec === 'number' && clip.durationSec > 0 && (
                       <span className="font-mono opacity-80">{clip.durationSec}s</span>
@@ -804,7 +933,10 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               })}
             </div>
             {activeClip && (
-              <span className="text-[11px] font-mono text-[#64748B] truncate max-w-[220px]" title={activeClip.fileName}>
+              <span
+                className="text-[11px] font-mono text-[#64748B] truncate max-w-[220px]"
+                title={activeClip.fileName}
+              >
                 {activeClip.fileName}
               </span>
             )}
@@ -817,15 +949,15 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           </div>
         )}
 
-        {/* Thanh cong cu Telestrator */}
+        {/* Telestrator Drawing Toolbar */}
         {activeVideoUrl && drawMode && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] px-3 py-2">
             <div className="flex items-center gap-1.5">
               {(
                 [
-                  { id: 'arrow', label: 'Mũi tên', icon: ArrowUpRight },
-                  { id: 'circle', label: 'Khoanh vùng', icon: Circle },
-                  { id: 'pen', label: 'Bút tự do', icon: PencilSimple },
+                  { id: 'arrow', label: tr('Arrow', 'Mũi tên'), icon: ArrowUpRight },
+                  { id: 'circle', label: tr('Zone', 'Khoanh vùng'), icon: Circle },
+                  { id: 'pen', label: tr('Freehand', 'Bút tự do'), icon: PencilSimple },
                 ] as const
               ).map((item) => {
                 const IconComp = item.icon;
@@ -849,7 +981,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-2 px-2">
-                {TACTICAL_COLORS.map((c) => (
+                {tacticalColors.map((c) => (
                   <button
                     key={c.value}
                     type="button"
@@ -871,7 +1003,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#94A3B8] hover:text-[#EEF2F6] disabled:opacity-40"
               >
                 <ArrowCounterClockwise size={12} weight="bold" aria-hidden="true" />
-                <span>Hoàn tác</span>
+                <span>{tr('Undo', 'Hoàn tác')}</span>
               </button>
               <button
                 type="button"
@@ -880,25 +1012,31 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] border border-[#232B3B] px-2.5 py-1 text-xs text-[#F43F5E] hover:bg-[#232B3B] disabled:opacity-40"
               >
                 <Trash size={12} weight="bold" aria-hidden="true" />
-                <span>Xóa nét</span>
+                <span>{tr('Clear', 'Xóa nét')}</span>
               </button>
             </div>
           </div>
         )}
 
-        {/* Khung hien thi Video + Telestrator */}
+        {/* Video Viewport + Canvas */}
         {!hasSelectedMatch ? (
           <div className="aspect-video w-full rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] flex flex-col items-center justify-center gap-2 p-6 text-center">
             <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
             <p className="text-xs text-[#94A3B8] max-w-[45ch]">
-              Chọn một trận đấu ở danh sách bên trái để xem video replay và phân tích chiến thuật.
+              {tr(
+                'Select a match from the left sidebar to inspect replay video and tactical telemetry.',
+                'Chọn một trận đấu ở danh sách bên trái để xem video replay và phân tích chiến thuật.'
+              )}
             </p>
           </div>
         ) : !activeVideoUrl ? (
           <div className="aspect-video w-full rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] flex flex-col items-center justify-center gap-3 p-6 text-center">
             <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
             <p className="text-xs text-[#94A3B8] max-w-[55ch] leading-relaxed">
-              Trận đấu này chưa có video highlight tự động từ Overwolf. Chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh và bút vẽ chiến thuật.
+              {tr(
+                'No automatic highlight clip is attached to this match yet. Select a local video file (.mp4 / .webm) to unlock timeline combat markers, custom bookmarks, and Telestrator drawing.',
+                'Trận đấu này chưa có video highlight tự động. Chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh, dấu trang và bút vẽ chiến thuật.'
+              )}
             </p>
             <button
               type="button"
@@ -910,7 +1048,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               }`}
             >
               <UploadSimple size={14} weight="bold" aria-hidden="true" />
-              <span>Chọn file video Highlight (.mp4)</span>
+              <span>{tr('Choose Highlight Video (.mp4)', 'Chọn file video Highlight (.mp4)')}</span>
             </button>
           </div>
         ) : (
@@ -931,7 +1069,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               {!drawMode && (
                 <button
                   type="button"
-                  aria-label={isPlaying ? 'Tạm dừng video replay' : 'Phát video replay'}
+                  aria-label={
+                    isPlaying
+                      ? tr('Pause replay video', 'Tạm dừng video replay')
+                      : tr('Play replay video', 'Phát video replay')
+                  }
                   onClick={togglePlay}
                   className="absolute inset-0 h-full w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#38BDF8]"
                 />
@@ -954,7 +1096,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               <span className="pointer-events-none absolute bottom-2 right-2 h-2.5 w-2.5 border-b border-r border-[#94A3B8]/40" />
             </div>
 
-            {/* Thanh tua Timeline kem cac moc su kien */}
+            {/* Scrubber Timeline + Markers */}
             <div className="pt-1 space-y-2.5">
               <div className="relative flex h-6 items-center">
                 {hoveredMarker && (
@@ -978,7 +1120,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 <div className="relative h-2 w-full rounded-[1px] bg-[#171D28] border border-[#232B3B]">
                   <button
                     type="button"
-                    aria-label="Tua thời gian phát video"
+                    aria-label={tr('Seek replay timeline', 'Tua thời gian phát video')}
                     onClick={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect();
                       const ratio = (e.clientX - rect.left) / rect.width;
@@ -1007,7 +1149,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                           aria-label={mk.label}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleSelectRoundAndSeek(mk.roundNumber, mk.timestampSec);
+                            handleSelectRoundAndSeek(
+                              mk.roundNumber,
+                              mk.timestampSec,
+                              mk.type === 'bookmark'
+                            );
                           }}
                           onMouseEnter={() => setHoveredMarker(mk)}
                           onMouseLeave={() => setHoveredMarker(null)}
@@ -1021,11 +1167,13 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 </div>
               </div>
 
+              {/* Playback & Frame-Step Controls */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8]">
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
                     onClick={togglePlay}
+                    title={tr('Shortcut: Space', 'Phím tắt: Space')}
                     className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                   >
                     {isPlaying ? (
@@ -1033,48 +1181,156 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     ) : (
                       <Play size={13} weight="bold" aria-hidden="true" />
                     )}
-                    <span>{isPlaying ? 'Tạm dừng' : 'Phát'}</span>
+                    <span>{isPlaying ? tr('Pause', 'Tạm dừng') : tr('Play', 'Phát')}</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => seekTo(currentTime - 5)}
-                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono hover:text-[#EEF2F6]"
+                    title={tr('Back 5s (Left Arrow)', 'Lùi 5 giây (Mũi tên trái)')}
+                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono hover:text-[#EEF2F6]"
                   >
                     <Rewind size={12} weight="bold" aria-hidden="true" />
                     <span>5s</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => stepFrame(-0.1)}
+                    title={tr('Previous frame -0.1s (,)', 'Lùi từng khung hình -0.1s (phím ,)')}
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
+                  >
+                    -0.1s
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => stepFrame(0.1)}
+                    title={tr('Next frame +0.1s (.)', 'Tiến từng khung hình +0.1s (phím .)')}
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
+                  >
+                    +0.1s
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => seekTo(currentTime + 5)}
-                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono hover:text-[#EEF2F6]"
+                    title={tr('Forward 5s (Right Arrow)', 'Tiến 5 giây (Mũi tên phải)')}
+                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono hover:text-[#EEF2F6]"
                   >
                     <span>5s</span>
                     <FastForward size={12} weight="bold" aria-hidden="true" />
                   </button>
+
                   <button
                     type="button"
                     onClick={cyclePlaybackRate}
+                    title={tr('Cycle playback speed', 'Đổi tốc độ phát')}
                     className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono text-[#EEF2F6] tabular-nums"
                   >
                     {playbackRate}x
                   </button>
-                  <span className="ml-2 font-mono text-[#94A3B8] tabular-nums">
+
+                  <span className="ml-1 font-mono text-[#94A3B8] tabular-nums">
                     {formatTime(currentTime)} / {formatTime(duration)}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3 font-mono text-[11px] text-[#94A3B8]">
+                <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[#94A3B8]">
                   <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#10B981]" /> Có Kill
+                    <span className="h-2 w-2 rounded-full bg-[#10B981]" /> {tr('Kill', 'Có Kill')}
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#F43F5E]" /> Bị hạ gục
+                    <span className="h-2 w-2 rounded-full bg-[#F43F5E]" />{' '}
+                    {tr('Death', 'Bị hạ gục')}
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#E59A23]" /> Thắng / Vòng bo
+                    <span className="h-2 w-2 rounded-full bg-[#E59A23]" />{' '}
+                    {tr('Round / Zone', 'Thắng / Bo')}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-[#38BDF8]" />{' '}
+                    {tr('Bookmark', 'Dấu trang')}
                   </span>
                 </div>
               </div>
+
+              {/* Custom Timestamp Bookmarks Bar */}
+              {matchId && (
+                <div className="rounded-[2px] bg-[#0A0D12] border border-[#232B3B] p-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-wider text-[#38BDF8] mr-1">
+                      <BookmarkSimple size={13} weight="bold" aria-hidden="true" />
+                      <span>{tr('Bookmarks:', 'Dấu trang:')}</span>
+                    </span>
+
+                    {bookmarks.length === 0 ? (
+                      <span className="text-[11px] text-[#64748B]">
+                        {tr(
+                          'Press B or click + Mark to save key replay moments.',
+                          'Bấm phím B hoặc nút + Lưu mốc để đánh dấu pha quan trọng.'
+                        )}
+                      </span>
+                    ) : (
+                      bookmarks.map((bm) => (
+                        <span
+                          key={bm.id}
+                          className="inline-flex items-center rounded-[2px] bg-[#171D28] border border-[#38BDF8]/35 text-[11px] font-mono text-[#EEF2F6]"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => seekTo(bm.timeSec)}
+                            className="px-2 py-0.5 hover:text-[#38BDF8] transition duration-150 tabular-nums"
+                          >
+                            <strong className="text-[#38BDF8]">{formatTime(bm.timeSec)}</strong>{' '}
+                            {bm.label}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={tr(
+                              `Remove bookmark ${bm.label}`,
+                              `Xóa dấu trang ${bm.label}`
+                            )}
+                            onClick={() => handleRemoveBookmark(bm.id)}
+                            className="px-1.5 py-0.5 border-l border-[#232B3B] text-[#64748B] hover:text-[#F43F5E] transition duration-150"
+                          >
+                            <X size={11} weight="bold" aria-hidden="true" />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <label htmlFor="replay-bookmark-label" className="sr-only">
+                      {tr('Bookmark label', 'Tên dấu trang thời gian')}
+                    </label>
+                    <input
+                      id="replay-bookmark-label"
+                      type="text"
+                      value={bookmarkLabelInput}
+                      onChange={(e) => setBookmarkLabelInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddBookmark();
+                        }
+                      }}
+                      placeholder={tr('Note (optional)...', 'Ghi chú mốc...')}
+                      className="w-32 sm:w-40 px-2 py-1 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#38BDF8] text-[11px] font-mono text-[#EEF2F6] placeholder-[#64748B] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddBookmark}
+                      title={tr('Shortcut: B', 'Phím tắt: B')}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-[2px] bg-[#38BDF8]/15 hover:bg-[#38BDF8]/25 border border-[#38BDF8]/45 font-mono text-[11px] font-bold text-[#38BDF8] transition duration-150"
+                    >
+                      <BookmarkSimple size={12} weight="bold" aria-hidden="true" />
+                      <span>{tr('+ Mark (B)', '+ Lưu mốc (B)')}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}

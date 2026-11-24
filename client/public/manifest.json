@@ -4,9 +4,9 @@
   "meta": {
     "name": "TacticalReplayAI",
     "author": "Dang Thanh Kiet",
-    "version": "1.6.1",
+    "version": "1.7.0",
     "minimum-overwolf-version": "0.240.0",
-    "description": "Tự động quay highlight và phân tích chiến thuật VALORANT & PUBG",
+    "description": "Auto-capture post-match highlights and AI tactical analysis for VALORANT & PUBG.",
     "icon": "IconMouseOver.png",
     "icon_gray": "IconMouseNormal.png",
     "launcher_icon": "launcher_icon.ico"

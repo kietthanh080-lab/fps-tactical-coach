@@ -1,27 +1,38 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   ArrowRight,
   ArrowsClockwise,
   Broadcast,
   ChartBar,
   Crosshair,
+  Flame,
   FolderOpen,
-  HardDrive,
-  LinkBreak,
+  GearSix,
+  Globe,
   LinkSimple,
   MagnifyingGlass,
+  NotePencil,
   PushPin,
   Record,
   ShareNetwork,
   ShieldCheck,
   SignOut,
   SlidersHorizontal,
-  Swap,
+  TrendDown,
+  TrendUp,
   Trophy,
   VideoCamera,
   X,
 } from '@phosphor-icons/react';
+import { I18nProvider, useI18n } from './i18n';
+import {
+  AppLanguage,
+  AppUserSettings,
+  getAllMatchAnnotations,
+  loadAppSettings,
+  saveAppSettings,
+} from './services/appSettings';
 import {
   API_BASE_URL,
   AuthProvidersStatus,
@@ -58,10 +69,9 @@ import { ReplayPlayer } from './components/ReplayPlayer';
 import { AnalyzedRoundUI } from './components/RoundTimeline';
 import { MatchReportUI, TacticalReport } from './components/TacticalReport';
 import { FriendsLeaderboard } from './components/FriendsLeaderboard';
-import { SettingsVaultModal } from './components/SettingsVaultModal';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 import { MatchTrendModal } from './components/MatchTrendModal';
-import { StorageManagerModal } from './components/StorageManagerModal';
+import { SettingsTabId, UnifiedSettingsModal } from './components/UnifiedSettingsModal';
 
 interface UserProfile {
   id: number;
@@ -101,6 +111,38 @@ function generateSessionId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+function parseMatchQuickMetrics(v: SavedMatchItem): {
+  kills: number;
+  isSuccess: boolean;
+  isTop1: boolean;
+} {
+  const res = (v.match_result || '').toUpperCase();
+  const sum = v.score_summary || '';
+
+  let kills = 0;
+  const pubgKills = sum.match(/(\d+)\s*kills?/i) || res.match(/(\d+)\s*kills?/i);
+  const kdaMatch = sum.match(/(\d+)\s*\/\s*\d+\s*\/\s*\d+/);
+  const shortKills = sum.match(/\b(\d+)K\b/i);
+  if (pubgKills) {
+    kills = Number(pubgKills[1]) || 0;
+  } else if (kdaMatch) {
+    kills = Number(kdaMatch[1]) || 0;
+  } else if (shortKills) {
+    kills = Number(shortKills[1]) || 0;
+  }
+
+  if (v.game_type === 'PUBG') {
+    const placeMatch = res.match(/#(\d+)/) || res.match(/TOP\s*(\d+)/i);
+    const place = placeMatch ? Number(placeMatch[1]) : 99;
+    const isTop1 = place === 1 || res.includes('WIN') || res.includes('THẮNG');
+    const isSuccess = isTop1 || (place >= 1 && place <= 10);
+    return { kills, isSuccess, isTop1 };
+  }
+
+  const isWin = res.includes('WIN') || res.includes('THẮNG') || res.includes('VICTORY');
+  return { kills, isSuccess: isWin, isTop1: isWin };
+}
+
 const SteamBrandMark: React.FC = () => (
   <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0z" />
@@ -114,6 +156,7 @@ const RiotBrandMark: React.FC = () => (
 );
 
 const UpdateBanner: React.FC = () => {
+  const { tr } = useI18n();
   const [updateState, setUpdateState] = useState<{
     status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
     version?: string;
@@ -133,33 +176,38 @@ const UpdateBanner: React.FC = () => {
       {updateState.status === 'available' && (
         <>
           <span className="text-xs font-mono">
-            Phiên bản mới <b className="text-[#10B981]">v{updateState.version}</b> sẵn sàng
+            {tr('New version', 'Phiên bản mới')}{' '}
+            <b className="text-[#10B981]">v{updateState.version}</b>{' '}
+            {tr('is ready', 'sẵn sàng')}
           </span>
           <button
             type="button"
             onClick={() => (window as any).electronUpdater?.downloadUpdate()}
             className="bg-[#10B981] hover:bg-emerald-400 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
           >
-            Cập nhật ngay
+            {tr('Update Now', 'Cập nhật ngay')}
           </button>
         </>
       )}
 
       {updateState.status === 'downloading' && (
         <span className="text-xs font-mono text-[#38BDF8] tabular-nums">
-          Đang tải bản cập nhật... <b>{updateState.percent ?? 0}%</b>
+          {tr('Downloading update...', 'Đang tải bản cập nhật...')}{' '}
+          <b>{updateState.percent ?? 0}%</b>
         </span>
       )}
 
       {updateState.status === 'downloaded' && (
         <>
-          <span className="text-xs font-mono">Tải hoàn tất</span>
+          <span className="text-xs font-mono">
+            {tr('Update ready to install', 'Tải hoàn tất')}
+          </span>
           <button
             type="button"
             onClick={() => (window as any).electronUpdater?.installUpdate()}
             className="bg-[#38BDF8] hover:bg-sky-300 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
           >
-            Khởi động lại
+            {tr('Restart App', 'Khởi động lại')}
           </button>
         </>
       )}
@@ -167,11 +215,13 @@ const UpdateBanner: React.FC = () => {
   );
 };
 
-const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.6.1';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.7.0';
 
-const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
-  isElectronRuntime = false,
-}) => {
+const AppFooterVersion: React.FC<{
+  isElectronRuntime?: boolean;
+  onOpenSettings: () => void;
+}> = ({ isElectronRuntime = false, onOpenSettings }) => {
+  const { tr } = useI18n();
   const [checking, setChecking] = useState(false);
   const [checkNote, setCheckNote] = useState<string | null>(null);
 
@@ -179,16 +229,16 @@ const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
     const updater = (window as any).electronUpdater;
     if (!updater?.checkForUpdates) return;
     setChecking(true);
-    setCheckNote('Đang kiểm tra bản mới...');
+    setCheckNote(tr('Checking for updates...', 'Đang kiểm tra bản mới...'));
     try {
       const res = await updater.checkForUpdates();
       if (res && res.packaged === false) {
-        setCheckNote('Đang chạy bản Dev cục bộ.');
+        setCheckNote(tr('Running local dev build.', 'Đang chạy bản Dev cục bộ.'));
       } else {
-        setCheckNote('Đã kiểm tra cập nhật.');
+        setCheckNote(tr('Up to date.', 'Đã kiểm tra cập nhật.'));
       }
     } catch {
-      setCheckNote('Không thể kiểm tra cập nhật lúc này.');
+      setCheckNote(tr('Unable to check updates right now.', 'Không thể kiểm tra cập nhật lúc này.'));
     } finally {
       setChecking(false);
       window.setTimeout(() => setCheckNote(null), 4000);
@@ -196,7 +246,7 @@ const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
   };
 
   return (
-    <footer className="border-t border-[#232B3B] bg-[#0A0D12] px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-[#94A3B8]">
+    <footer className="border-t border-[#232B3B] bg-[#0A0D12]/90 px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-[#94A3B8]">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-bold text-[#EEF2F6]">TacticalReplayAI</span>
         <span className="px-1.5 py-0.5 rounded-[2px] bg-[#171D28] border border-[#232B3B] text-[#38BDF8] font-bold tabular-nums">
@@ -213,6 +263,13 @@ const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
 
       <div className="flex items-center gap-3">
         {checkNote && <span className="text-[#38BDF8]">{checkNote}</span>}
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+        >
+          {tr('Settings (Ctrl+,)', 'Cài đặt (Ctrl+,)')}
+        </button>
         {isElectronRuntime && (window as any).electronUpdater?.checkForUpdates && (
           <button
             type="button"
@@ -220,7 +277,9 @@ const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
             onClick={() => void handleCheckUpdate()}
             className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] disabled:opacity-50 transition duration-150"
           >
-            {checking ? 'Đang kiểm tra...' : 'Kiểm tra cập nhật'}
+            {checking
+              ? tr('Checking...', 'Đang kiểm tra...')
+              : tr('Check for Updates', 'Kiểm tra cập nhật')}
           </button>
         )}
       </div>
@@ -228,12 +287,67 @@ const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
   );
 };
 
-const App: React.FC = () => {
+const LanguageQuickToggle: React.FC<{
+  lang: AppLanguage;
+  onChangeLang: (next: AppLanguage) => void;
+}> = ({ lang, onChangeLang }) => {
+  const { tr } = useI18n();
+  return (
+    <div
+      role="group"
+      aria-label={tr('Display language', 'Ngôn ngữ hiển thị')}
+      className="inline-flex items-center p-0.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] font-mono text-[11px] font-bold"
+    >
+      <Globe size={13} weight="bold" className="text-[#64748B] ml-1.5 mr-1" aria-hidden="true" />
+      <button
+        type="button"
+        aria-pressed={lang === 'en'}
+        onClick={() => onChangeLang('en')}
+        className={`px-2 py-0.5 rounded-[2px] transition duration-150 ${
+          lang === 'en'
+            ? 'bg-[#38BDF8]/20 text-[#38BDF8]'
+            : 'text-[#64748B] hover:text-[#EEF2F6]'
+        }`}
+      >
+        EN
+      </button>
+      <button
+        type="button"
+        aria-pressed={lang === 'vi'}
+        onClick={() => onChangeLang('vi')}
+        className={`px-2 py-0.5 rounded-[2px] transition duration-150 ${
+          lang === 'vi'
+            ? 'bg-[#38BDF8]/20 text-[#38BDF8]'
+            : 'text-[#64748B] hover:text-[#EEF2F6]'
+        }`}
+      >
+        VI
+      </button>
+    </div>
+  );
+};
+
+interface AppContentProps {
+  appSettings: AppUserSettings;
+  onUpdateAppSettings: (patch: Partial<AppUserSettings>) => void;
+  onReplaceAppSettings: (full: AppUserSettings) => void;
+}
+
+const AppContent: React.FC<AppContentProps> = ({
+  appSettings,
+  onUpdateAppSettings,
+  onReplaceAppSettings,
+}) => {
+  const { lang, setLang, tr, ts, localeCode } = useI18n();
   const reduceMotion = useReducedMotion();
+
+  const initialDefaultGame: 'VALORANT' | 'PUBG' =
+    appSettings.defaultGame === 'VALORANT' ? 'VALORANT' : 'PUBG';
+
   const [token, setTokenState] = useState<string | null>(() => getAuthToken());
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [videos, setVideos] = useState<SavedMatchItem[]>([]);
-  const [activeGameTab, setActiveGameTab] = useState<'VALORANT' | 'PUBG'>('PUBG');
+  const [activeGameTab, setActiveGameTab] = useState<'VALORANT' | 'PUBG'>(initialDefaultGame);
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
 
   const [rounds, setRounds] = useState<AnalyzedRoundUI[]>([]);
@@ -249,18 +363,22 @@ const App: React.FC = () => {
     steamReady: true,
   });
 
-  const [searchGame, setSearchGame] = useState<'PUBG' | 'VALORANT'>('PUBG');
+  const [searchGame, setSearchGame] = useState<'PUBG' | 'VALORANT'>(initialDefaultGame);
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<PlayerSearchResult | null>(null);
 
   const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [showSettingsVault, setShowSettingsVault] = useState(false);
   const [showPostMatchRecap, setShowPostMatchRecap] = useState(false);
   const [showTrendModal, setShowTrendModal] = useState(false);
-  const [showStorageModal, setShowStorageModal] = useState(false);
+  const [showUnifiedSettings, setShowUnifiedSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabId>('GENERAL');
+  const [dataRevision, setDataRevision] = useState(0);
+
   const [matchSearchText, setMatchSearchText] = useState('');
-  const [matchFilterMode, setMatchFilterMode] = useState<'ALL' | 'WINS' | 'CLIPS' | 'PINNED'>('ALL');
+  const [matchFilterMode, setMatchFilterMode] = useState<
+    'ALL' | 'WINS' | 'CLIPS' | 'PINNED' | 'NOTES'
+  >('ALL');
 
   const [captureMode, setCaptureModeState] = useState<CaptureMode>(() => getCaptureMode());
   const [isElectronRuntime, setIsElectronRuntime] = useState(false);
@@ -288,12 +406,40 @@ const App: React.FC = () => {
   videosRef.current = videos;
   const activeGameTabRef = useRef(activeGameTab);
   activeGameTabRef.current = activeGameTab;
+  const appSettingsRef = useRef(appSettings);
+  appSettingsRef.current = appSettings;
+  const trRef = useRef(tr);
+  trRef.current = tr;
+  const localeRef = useRef(localeCode);
+  localeRef.current = localeCode;
+
   const pollIntervalRef = useRef<number | null>(null);
   const isBackgroundSyncingRef = useRef(false);
   const prevActiveGameRef = useRef<'VALORANT' | 'PUBG' | null>(null);
-  const autoRefreshTriggerRef = useRef<((showToastOnNew?: boolean, isManual?: boolean) => Promise<void>) | null>(null);
+  const autoRefreshTriggerRef = useRef<
+    ((showToastOnNew?: boolean, isManual?: boolean) => Promise<void>) | null
+  >(null);
 
   const serverRootUrl = API_BASE_URL.replace(/\/api\/?$/, '');
+  const isOverwolfRuntime =
+    typeof overwolf !== 'undefined' && Boolean(overwolf.media?.replays || overwolf.streaming);
+
+  const openSettingsAt = useCallback((tab: SettingsTabId = 'GENERAL') => {
+    setSettingsInitialTab(tab);
+    setShowUnifiedSettings(true);
+  }, []);
+
+  useEffect(() => {
+    const onGlobalKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setSettingsInitialTab('GENERAL');
+        setShowUnifiedSettings((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKey);
+    return () => window.removeEventListener('keydown', onGlobalKey);
+  }, []);
 
   const stopAuthPolling = useCallback(() => {
     if (pollIntervalRef.current !== null) {
@@ -394,7 +540,6 @@ const App: React.FC = () => {
           if (status.shouldRecord) setBlackFrameAlert(false);
           void desktopRingRecorder.ensureState(status);
 
-          // Khi vua thoat game, cho 10s de server API chot tran roi tu dong dong bo
           if (prevGame && !status.activeGame) {
             if (postGameSyncTimer !== null) window.clearTimeout(postGameSyncTimer);
             postGameSyncTimer = window.setTimeout(() => {
@@ -407,14 +552,20 @@ const App: React.FC = () => {
 
     desktopRingRecorder.setOnF9Saved((clip) => {
       setStatusMsg(
-        `Đã cắt Highlight: ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
+        trRef.current(
+          `Saved Highlight clip: ${clip.fileName} (auto-attaches on next match sync).`,
+          `Đã cắt Highlight: ${clip.fileName} (tự động ghép vào trận khi đồng bộ xong).`
+        )
       );
     });
 
     desktopRingRecorder.setOnBlackScreen(() => {
       setBlackFrameAlert(true);
       setStatusMsg(
-        'Phát hiện khung hình quay bị đen khi chơi Fullscreen. Bấm nút "Sửa lỗi đen hình Fullscreen" ở cột trái để khắc phục.'
+        trRef.current(
+          'Black frame detected while recording Fullscreen. Click "Fix Fullscreen Black Frame" in the left panel or Settings -> Capture.',
+          'Phát hiện khung hình quay bị đen khi chơi Fullscreen. Bấm nút sửa lỗi đen hình ở cột trái để khắc phục.'
+        )
       );
     });
 
@@ -471,7 +622,13 @@ const App: React.FC = () => {
         setSelectedRound(detail.rounds[0].roundNumber);
       }
     } catch (err: any) {
-      setStatusMsg(err.message || 'Lỗi tải chi tiết phân tích trận đấu.');
+      setStatusMsg(
+        err.message ||
+          trRef.current(
+            'Failed to load match telemetry details.',
+            'Lỗi tải chi tiết phân tích trận đấu.'
+          )
+      );
     }
   }, []);
 
@@ -487,15 +644,21 @@ const App: React.FC = () => {
         setVideos(loadedVideos);
 
         let targetTab = preferredTab || activeGameTabRef.current;
-        if (!preferredTab && loadedProfile) {
-          const hasRiot = Boolean(loadedProfile.has_riot_linked || loadedProfile.riot_game_name);
-          const hasPubg = Boolean(loadedProfile.steam_id || loadedProfile.pubg_player_name);
-          if (hasRiot && !hasPubg) {
-            targetTab = 'VALORANT';
-            setActiveGameTab('VALORANT');
-          } else if (hasPubg && !hasRiot) {
-            targetTab = 'PUBG';
-            setActiveGameTab('PUBG');
+        if (!preferredTab) {
+          const prefDefault = appSettingsRef.current.defaultGame;
+          if (prefDefault === 'VALORANT' || prefDefault === 'PUBG') {
+            targetTab = prefDefault;
+            setActiveGameTab(prefDefault);
+          } else if (loadedProfile) {
+            const hasRiot = Boolean(loadedProfile.has_riot_linked || loadedProfile.riot_game_name);
+            const hasPubg = Boolean(loadedProfile.steam_id || loadedProfile.pubg_player_name);
+            if (hasRiot && !hasPubg) {
+              targetTab = 'VALORANT';
+              setActiveGameTab('VALORANT');
+            } else if (hasPubg && !hasRiot) {
+              targetTab = 'PUBG';
+              setActiveGameTab('PUBG');
+            }
           }
         }
 
@@ -511,14 +674,20 @@ const App: React.FC = () => {
           await handleSelectMatch(tabMatches[0]);
           if (newlyMatchedIds.length > 0) {
             setStatusMsg(
-              `Đã tự động cắt và gắn clip Highlight cho ${newlyMatchedIds.length} trận vừa xong.`
+              trRef.current(
+                `Auto-trimmed and linked Highlight clips for ${newlyMatchedIds.length} recent match(es).`,
+                `Đã tự động cắt và gắn clip Highlight cho ${newlyMatchedIds.length} trận vừa xong.`
+              )
             );
           }
         } else {
           resetSelection();
         }
       } catch (err: any) {
-        setStatusMsg(err.message || 'Không thể tải danh sách trận đấu.');
+        setStatusMsg(
+          err.message ||
+            trRef.current('Unable to load saved matches.', 'Không thể tải danh sách trận đấu.')
+        );
       } finally {
         setLoading(false);
       }
@@ -549,7 +718,6 @@ const App: React.FC = () => {
       try {
         const currentTab = activeGameTabRef.current;
 
-        // 1. Tu dong dong bo tran dau moi nhat tu API chinh thuc theo tab dang mo
         if (
           currentTab === 'PUBG' &&
           (profile?.pubg_player_name || profile?.steam_persona_name)
@@ -558,10 +726,17 @@ const App: React.FC = () => {
           if (res.syncedCount > 0) {
             await loadUserVideos('PUBG');
             if (showToastOnNew) {
-              setStatusMsg(res.message);
-              setShowPostMatchRecap(true);
+              setStatusMsg(
+                trRef.current(
+                  `Synced ${res.syncedCount} new PUBG match(es).`,
+                  res.message
+                )
+              );
+              if (appSettingsRef.current.autoPostMatchRecap) {
+                setShowPostMatchRecap(true);
+              }
             }
-            setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+            setLastSyncedAt(new Date().toLocaleTimeString(localeRef.current, { hour12: false }));
             return;
           }
         } else if (
@@ -573,15 +748,21 @@ const App: React.FC = () => {
           if (res.syncedCount > 0) {
             await loadUserVideos('VALORANT');
             if (showToastOnNew) {
-              setStatusMsg(res.message);
-              setShowPostMatchRecap(true);
+              setStatusMsg(
+                trRef.current(
+                  `Synced ${res.syncedCount} new VALORANT match(es).`,
+                  res.message
+                )
+              );
+              if (appSettingsRef.current.autoPostMatchRecap) {
+                setShowPostMatchRecap(true);
+              }
             }
-            setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+            setLastSyncedAt(new Date().toLocaleTimeString(localeRef.current, { hour12: false }));
             return;
           }
         }
 
-        // 2. Tai lai danh sach tu may chu (nhan tran moi tu Overwolf hoac thiet bi khac)
         const latest = await fetchMyVideos();
         const latestList: SavedMatchItem[] = latest.videos || [];
         const currentList = videosRef.current;
@@ -600,9 +781,14 @@ const App: React.FC = () => {
           await handleSelectMatch(latestTabList[0]);
           if (showToastOnNew) {
             setStatusMsg(
-              `Phát hiện trận ${currentTab} mới, đã tự động làm mới lịch sử 20 trận gần nhất.`
+              trRef.current(
+                `New ${currentTab} match detected; refreshed latest 20-match history.`,
+                `Phát hiện trận ${currentTab} mới, đã tự động làm mới lịch sử 20 trận gần nhất.`
+              )
             );
-            setShowPostMatchRecap(true);
+            if (appSettingsRef.current.autoPostMatchRecap) {
+              setShowPostMatchRecap(true);
+            }
           }
         } else {
           const matchedIds =
@@ -626,14 +812,25 @@ const App: React.FC = () => {
               await handleSelectMatch(latestTabList[0]);
             }
           } else if (isManual && latestTabList.length > 0) {
-            setStatusMsg(`Lịch sử 20 trận ${currentTab} đã là mới nhất.`);
+            setStatusMsg(
+              trRef.current(
+                `Latest 20 ${currentTab} matches are already up to date.`,
+                `Lịch sử 20 trận ${currentTab} đã là mới nhất.`
+              )
+            );
           }
         }
 
-        setLastSyncedAt(new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+        setLastSyncedAt(new Date().toLocaleTimeString(localeRef.current, { hour12: false }));
       } catch (err: any) {
         if (isManual) {
-          setStatusMsg(err?.message || 'Không thể đồng bộ lịch sử trận đấu lúc này.');
+          setStatusMsg(
+            err?.message ||
+              trRef.current(
+                'Unable to sync match history right now.',
+                'Không thể đồng bộ lịch sử trận đấu lúc này.'
+              )
+          );
         }
       } finally {
         isBackgroundSyncingRef.current = false;
@@ -643,23 +840,27 @@ const App: React.FC = () => {
 
     autoRefreshTriggerRef.current = syncAndCheckMatches;
 
-    // Dong bo ngam ngay sau khi mo app / chuyen tab (khong bat popup lam phien)
     const initialTimer = window.setTimeout(() => {
       void syncAndCheckMatches(false, false);
     }, 2000);
 
-    // Tu dong lam moi lich su moi 1 phut (60.000ms)
-    const intervalTimer = window.setInterval(() => {
-      void syncAndCheckMatches(true, false);
-    }, 60000);
+    let intervalTimer: number | null = null;
+    if (appSettings.autoRefreshSec > 0) {
+      intervalTimer = window.setInterval(() => {
+        void syncAndCheckMatches(true, false);
+      }, appSettings.autoRefreshSec * 1000);
+    }
 
     return () => {
       window.clearTimeout(initialTimer);
-      window.clearInterval(intervalTimer);
+      if (intervalTimer !== null) {
+        window.clearInterval(intervalTimer);
+      }
     };
   }, [
     token,
     activeGameTab,
+    appSettings.autoRefreshSec,
     profile?.pubg_player_name,
     profile?.steam_persona_name,
     profile?.has_riot_linked,
@@ -693,7 +894,9 @@ const App: React.FC = () => {
       const result = await searchPlayerProfile(searchGame, searchQuery.trim());
       setSearchResult(result);
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không tìm thấy người chơi này.');
+      setStatusMsg(
+        err.message || tr('Player profile not found.', 'Không tìm thấy người chơi này.')
+      );
     } finally {
       setSearching(false);
     }
@@ -735,7 +938,7 @@ const App: React.FC = () => {
           setStatusMsg(state.error);
         }
       } catch {
-        // Bỏ qua lỗi mạng tạm thời trong lúc chờ người dùng đăng nhập trên trình duyệt
+        // Ignore transient network errors while user completes sign-in in browser
       }
     }, 2000);
   };
@@ -750,7 +953,10 @@ const App: React.FC = () => {
       if (sessionId) startSessionPolling(sessionId);
       void electronAPI.openExternal(authUrl);
       setStatusMsg(
-        'Đã mở trang đăng nhập trên trình duyệt. Hoàn tất xác thực để tự động quay lại ứng dụng.'
+        tr(
+          'Opened sign-in page in your browser. Complete authentication to return automatically.',
+          'Đã mở trang đăng nhập trên trình duyệt. Hoàn tất xác thực để tự động quay lại ứng dụng.'
+        )
       );
       return;
     }
@@ -763,7 +969,10 @@ const App: React.FC = () => {
       if (sessionId) startSessionPolling(sessionId);
       overwolf.utils.openUrlInDefaultBrowser(authUrl);
       setStatusMsg(
-        'Đã mở trình duyệt mặc định để xác thực tài khoản. Ứng dụng sẽ tự động đăng nhập sau khi hoàn tất.'
+        tr(
+          'Opened default browser for account sign-in. The app will sign in automatically once completed.',
+          'Đã mở trình duyệt mặc định để xác thực tài khoản. Ứng dụng sẽ tự động đăng nhập sau khi hoàn tất.'
+        )
       );
       return;
     }
@@ -781,7 +990,10 @@ const App: React.FC = () => {
   const handleRiotLogin = (forceLoginPrompt = false) => {
     if (!providers.riotRsoReady) {
       setStatusMsg(
-        'Riot Sign On (RSO) chưa sẵn sàng vì máy chủ chưa có RIOT_CLIENT_ID & RIOT_CLIENT_SECRET chính thức từ Riot Developer Portal.'
+        tr(
+          'Riot Sign On (RSO) is awaiting official RIOT_CLIENT_ID & RIOT_CLIENT_SECRET approval from Riot Developer Portal.',
+          'Riot Sign On (RSO) chưa sẵn sàng vì máy chủ đang chờ RIOT_CLIENT_ID & RIOT_CLIENT_SECRET chính thức từ Riot Developer Portal.'
+        )
       );
       return;
     }
@@ -800,7 +1012,10 @@ const App: React.FC = () => {
       const { authUrl } = await prepareRiotLinkUrl({ returnTo, sessionId });
       openAuthFlow(authUrl, mode, sessionId);
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể khởi tạo liên kết Riot Sign On.');
+      setStatusMsg(
+        err.message ||
+          tr('Unable to start Riot Sign On linking.', 'Không thể khởi tạo liên kết Riot Sign On.')
+      );
     }
   };
 
@@ -811,7 +1026,10 @@ const App: React.FC = () => {
       const { authUrl } = await prepareSteamLinkUrl({ returnTo, sessionId });
       openAuthFlow(authUrl, mode, sessionId);
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể khởi tạo liên kết Steam.');
+      setStatusMsg(
+        err.message ||
+          tr('Unable to start Steam OpenID linking.', 'Không thể khởi tạo liên kết Steam.')
+      );
     }
   };
 
@@ -820,10 +1038,19 @@ const App: React.FC = () => {
     setStatusMsg(null);
     try {
       const res = await syncRealPubgMatches();
-      setStatusMsg(res.message);
+      setStatusMsg(
+        tr(
+          res.syncedCount > 0
+            ? `Synced ${res.syncedCount} new PUBG match(es).`
+            : 'Latest 20 PUBG matches are already synced.',
+          res.message
+        )
+      );
       await loadUserVideos('PUBG');
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể đồng bộ trận PUBG.');
+      setStatusMsg(
+        err.message || tr('Failed to sync PUBG matches.', 'Không thể đồng bộ trận PUBG.')
+      );
     } finally {
       setSyncingPubg(false);
     }
@@ -834,10 +1061,20 @@ const App: React.FC = () => {
     setStatusMsg(null);
     try {
       const res = await syncRealValorantMatches();
-      setStatusMsg(res.message);
+      setStatusMsg(
+        tr(
+          res.syncedCount > 0
+            ? `Synced ${res.syncedCount} new VALORANT match(es).`
+            : 'Latest 20 VALORANT matches are already synced.',
+          res.message
+        )
+      );
       await loadUserVideos('VALORANT');
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể đồng bộ trận VALORANT.');
+      setStatusMsg(
+        err.message ||
+          tr('Failed to sync VALORANT matches.', 'Không thể đồng bộ trận VALORANT.')
+      );
     } finally {
       setSyncingValorant(false);
     }
@@ -846,7 +1083,12 @@ const App: React.FC = () => {
   const handleCopyShareLink = async (matchId: string) => {
     const shareUrl = `${API_BASE_URL}/analyze/public-match/${encodeURIComponent(matchId)}`;
     await navigator.clipboard.writeText(shareUrl);
-    setStatusMsg(`Đã sao chép link chia sẻ trận đấu: ${shareUrl}`);
+    setStatusMsg(
+      tr(
+        `Copied public match share link: ${shareUrl}`,
+        `Đã sao chép link chia sẻ trận đấu: ${shareUrl}`
+      )
+    );
   };
 
   const handleToggleCaptureMode = (nextMode: CaptureMode) => {
@@ -854,8 +1096,14 @@ const App: React.FC = () => {
     setCaptureModeState(nextMode);
     setStatusMsg(
       nextMode === 'HIGHLIGHT_CLIPS'
-        ? 'Đã chuyển sang chế độ Highlight (~23s quanh mỗi mạng hạ gục, tiết kiệm dung lượng ổ cứng khi chạy Overwolf).'
-        : 'Đã chuyển sang chế độ Quay cả trận (Full Match Replay khi chạy Overwolf).'
+        ? tr(
+            'Switched to Highlight Clips (~23s around kills & hotkeys to save disk space).',
+            'Đã chuyển sang chế độ Highlight (~23s quanh mỗi mạng hạ gục, tiết kiệm ổ cứng).'
+          )
+        : tr(
+            'Switched to Full Match Replay mode.',
+            'Đã chuyển sang chế độ Quay cả trận (Full Match Replay).'
+          )
     );
   };
 
@@ -869,11 +1117,22 @@ const App: React.FC = () => {
       setAutoStartEnabled(confirmed);
       setStatusMsg(
         confirmed
-          ? 'Đã bật tự động chạy ngầm cùng Windows ở khay hệ thống (System Tray).'
-          : 'Đã tắt tự động khởi động cùng Windows.'
+          ? tr(
+              'Enabled Launch at Windows Startup (runs quietly in System Tray).',
+              'Đã bật tự động chạy ngầm cùng Windows ở khay hệ thống (System Tray).'
+            )
+          : tr(
+              'Disabled Launch at Windows Startup.',
+              'Đã tắt tự động khởi động cùng Windows.'
+            )
       );
     } catch {
-      setStatusMsg('Không thể thay đổi thiết lập khởi động cùng Windows.');
+      setStatusMsg(
+        tr(
+          'Unable to update Windows Startup preference.',
+          'Không thể thay đổi thiết lập khởi động cùng Windows.'
+        )
+      );
     }
   };
 
@@ -889,11 +1148,19 @@ const App: React.FC = () => {
       }
       setStatusMsg(
         nextVal
-          ? 'Đã bật Tự quay Highlight ngầm (.exe) khi vào VALORANT hoặc PUBG.'
-          : 'Đã tạm tắt Tự quay Highlight trong .exe.'
+          ? tr(
+              'Enabled Desktop Auto-Highlight Capture when VALORANT or PUBG is running.',
+              'Đã bật Tự quay Highlight ngầm (.exe) khi vào VALORANT hoặc PUBG.'
+            )
+          : tr(
+              'Paused Desktop Auto-Highlight Capture.',
+              'Đã tạm tắt Tự quay Highlight trong .exe.'
+            )
       );
     } catch {
-      setStatusMsg('Không thể thay đổi trạng thái quay Highlight.');
+      setStatusMsg(
+        tr('Unable to toggle Desktop Capture state.', 'Không thể thay đổi trạng thái quay Highlight.')
+      );
     }
   };
 
@@ -905,8 +1172,14 @@ const App: React.FC = () => {
       const res = await electronAPI.checkOverwolfInstalled();
       setStatusMsg(
         res?.installed
-          ? 'Đã phát hiện Overwolf trên máy! Bạn có thể dùng Overwolf để bắt kill trực tiếp.'
-          : 'Chưa phát hiện Overwolf. Ứng dụng đang dùng bộ quay Desktop Auto-Clip + F9 tích hợp sẵn.'
+          ? tr(
+              'Overwolf detected on this PC! Hardware Game Events kill capture is available.',
+              'Đã phát hiện Overwolf trên máy! Bạn có thể dùng Overwolf để bắt kill trực tiếp.'
+            )
+          : tr(
+              'Overwolf not detected. Using built-in Desktop Auto-Clip + Hotkey recorder.',
+              'Chưa phát hiện Overwolf. Ứng dụng đang dùng bộ quay Desktop Auto-Clip tích hợp sẵn.'
+            )
       );
     } finally {
       setCheckingOverwolf(false);
@@ -946,33 +1219,57 @@ const App: React.FC = () => {
         }
         setCompatNeedsRestart(true);
         setStatusMsg(
-          'Đã đổi chế độ tương thích Fullscreen. Hãy mở lại ứng dụng để áp dụng ngay.'
+          tr(
+            'Updated Fullscreen compatibility mode. Restart the app to apply immediately.',
+            'Đã đổi chế độ tương thích Fullscreen. Hãy mở lại ứng dụng để áp dụng ngay.'
+          )
         );
       } else if (next.captureQuality) {
         setStatusMsg(
           next.captureQuality === '720p30'
-            ? 'Đã chọn chất lượng 720p 30fps (tối ưu giữ nguyên FPS khi bắn Fullscreen).'
-            : 'Đã chọn chất lượng 1080p 60fps.'
+            ? tr(
+                'Selected 720p 30fps (recommended for zero in-game FPS drop).',
+                'Đã chọn chất lượng 720p 30fps (tối ưu giữ nguyên FPS khi bắn Fullscreen).'
+              )
+            : tr('Selected 1080p 60fps capture quality.', 'Đã chọn chất lượng 1080p 60fps.')
         );
       } else if (next.hotkey) {
-        setStatusMsg(`Đã đổi phím cắt Highlight nhanh sang ${next.hotkey}.`);
+        setStatusMsg(
+          tr(
+            `Updated instant Highlight hotkey to ${next.hotkey}.`,
+            `Đã đổi phím cắt Highlight nhanh sang ${next.hotkey}.`
+          )
+        );
       } else if (typeof next.micEnabled === 'boolean') {
         setStatusMsg(
           next.micEnabled
-            ? 'Đã BẬT thu tiếng Micro cùng âm thanh game (áp dụng cho phiên quay tiếp theo).'
-            : 'Đã TẮT thu tiếng Micro khi quay.'
+            ? tr(
+                'Enabled Microphone voice capture alongside game audio.',
+                'Đã BẬT thu tiếng Micro cùng âm thanh game.'
+              )
+            : tr('Muted Microphone capture.', 'Đã TẮT thu tiếng Micro khi quay.')
         );
       } else if (typeof next.beepEnabled === 'boolean') {
         setStatusMsg(
           next.beepEnabled
-            ? 'Đã BẬT âm báo Beep xác nhận khi cắt Highlight.'
-            : 'Đã TẮT âm báo Beep.'
+            ? tr(
+                'Enabled audio confirmation chime when saving a Highlight.',
+                'Đã BẬT âm báo xác nhận khi cắt Highlight.'
+              )
+            : tr('Disabled audio confirmation chime.', 'Đã TẮT âm báo Beep.')
         );
       } else if (typeof next.maxStorageGb === 'number') {
-        setStatusMsg(`Đã đặt giới hạn kho clip cục bộ tối đa ${next.maxStorageGb} GB.`);
+        setStatusMsg(
+          tr(
+            `Set local clip storage cap to ${next.maxStorageGb} GB.`,
+            `Đã đặt giới hạn kho clip cục bộ tối đa ${next.maxStorageGb} GB.`
+          )
+        );
       }
     } catch {
-      setStatusMsg('Không thể cập nhật tùy chọn quay màn hình.');
+      setStatusMsg(
+        tr('Failed to update capture options.', 'Không thể cập nhật tùy chọn quay màn hình.')
+      );
     }
   };
 
@@ -988,14 +1285,20 @@ const App: React.FC = () => {
       );
       setStatusMsg(
         res.isPinned
-          ? `Đã ghim trận ${match.map_name}. Trận này và clip sẽ được giữ lại, không bị xóa khi vượt 20 trận.`
-          : `Đã bỏ ghim trận ${match.map_name}.`
+          ? tr(
+              `Pinned ${match.map_name}. This match and its clips are protected from 20-match auto-cleanup.`,
+              `Đã ghim trận ${match.map_name}. Trận này và clip sẽ được giữ lại, không bị xóa khi vượt 20 trận.`
+            )
+          : tr(`Unpinned ${match.map_name}.`, `Đã bỏ ghim trận ${match.map_name}.`)
       );
     } catch (err: any) {
       setVideos((prev) =>
         prev.map((m) => (m.match_id === match.match_id ? { ...m, is_pinned: !nextPinned } : m))
       );
-      setStatusMsg(err?.message || 'Không thể cập nhật trạng thái ghim trận.');
+      setStatusMsg(
+        err?.message ||
+          tr('Unable to update match pin status.', 'Không thể cập nhật trạng thái ghim trận.')
+      );
     }
   };
 
@@ -1004,7 +1307,7 @@ const App: React.FC = () => {
     if (electronAPI?.openHighlightsFolder) {
       void electronAPI.openHighlightsFolder();
     } else {
-      setShowStorageModal(true);
+      openSettingsAt('STORAGE');
     }
   };
 
@@ -1017,13 +1320,22 @@ const App: React.FC = () => {
         setBlackFrameAlert(res.isBlack);
         setStatusMsg(
           res.isBlack
-            ? 'Khung hình kiểm tra bị ĐEN do Fullscreen. Bấm nút sửa lỗi ngay bên dưới khung Test quay để chuyển chế độ tương thích.'
-            : 'Không lấy được luồng màn hình. Kiểm tra quyền quay màn hình Windows.'
+            ? tr(
+                'Test frame is BLACK due to Fullscreen mode. Click the compatibility fix button to resolve.',
+                'Khung hình kiểm tra bị ĐEN do Fullscreen. Bấm nút sửa lỗi để chuyển chế độ tương thích.'
+              )
+            : tr(
+                'Could not capture screen stream. Check Windows display capture permissions.',
+                'Không lấy được luồng màn hình. Kiểm tra quyền quay màn hình Windows.'
+              )
         );
       } else {
         setBlackFrameAlert(false);
         setStatusMsg(
-          `Kiểm tra OK (${res.width}x${res.height}): Đang bắt được hình ảnh rõ nét!`
+          tr(
+            `Capture Test OK (${res.width}x${res.height}): Clean video signal verified!`,
+            `Kiểm tra OK (${res.width}x${res.height}): Đang bắt được hình ảnh rõ nét!`
+          )
         );
       }
     } finally {
@@ -1035,7 +1347,12 @@ const App: React.FC = () => {
     e.preventDefault();
     const trimmed = pubgIgnInput.trim();
     if (!trimmed) {
-      setStatusMsg('Vui lòng nhập chính xác In-Game Name (IGN) PUBG của bạn.');
+      setStatusMsg(
+        tr(
+          'Please enter your exact PUBG In-Game Name (IGN).',
+          'Vui lòng nhập chính xác In-Game Name (IGN) PUBG của bạn.'
+        )
+      );
       return;
     }
 
@@ -1052,10 +1369,14 @@ const App: React.FC = () => {
             }
           : prev
       );
-      setStatusMsg(res.message);
+      setStatusMsg(
+        tr(`Verified PUBG IGN: ${res.pubg_player_name}`, res.message)
+      );
       await loadUserVideos('PUBG');
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể xác minh IGN PUBG.');
+      setStatusMsg(
+        err.message || tr('Unable to verify PUBG IGN.', 'Không thể xác minh IGN PUBG.')
+      );
     } finally {
       setSavingPubgIgn(false);
     }
@@ -1068,10 +1389,13 @@ const App: React.FC = () => {
       const res = await unlinkRiotAccount();
       setAuthToken(res.token);
       setTokenState(res.token);
-      setStatusMsg(res.message);
+      setStatusMsg(tr('Unlinked Riot account.', res.message));
       await loadUserVideos(activeGameTab);
     } catch (err: any) {
-      setStatusMsg(err.message || 'Không thể hủy liên kết tài khoản Riot.');
+      setStatusMsg(
+        err.message ||
+          tr('Unable to unlink Riot account.', 'Không thể hủy liên kết tài khoản Riot.')
+      );
     } finally {
       setUnlinkingRiot(false);
     }
@@ -1086,32 +1410,146 @@ const App: React.FC = () => {
     resetSelection();
   };
 
+  const annotationsMap = useMemo(() => getAllMatchAnnotations(), [dataRevision, selectedMatchId]);
+
+  const tabBaseVideos = useMemo(
+    () => videos.filter((v) => v.game_type === activeGameTab),
+    [videos, activeGameTab]
+  );
+
+  const sessionForm = useMemo(() => {
+    if (tabBaseVideos.length === 0) return null;
+    const recent = tabBaseVideos.slice(0, 5);
+    const older = tabBaseVideos.slice(5, 20);
+    const recentMetrics = recent.map(parseMatchQuickMetrics);
+    const olderMetrics = older.map(parseMatchQuickMetrics);
+
+    const recentSuccessRate = Math.round(
+      (recentMetrics.filter((m) => m.isSuccess).length / recent.length) * 100
+    );
+    const recentTop1Count = recentMetrics.filter((m) => m.isTop1).length;
+    const recentAvgKills =
+      Math.round(
+        (recentMetrics.reduce((acc, m) => acc + m.kills, 0) / recent.length) * 10
+      ) / 10;
+
+    const olderAvgKills =
+      olderMetrics.length > 0
+        ? olderMetrics.reduce((acc, m) => acc + m.kills, 0) / olderMetrics.length
+        : recentAvgKills;
+    const killsDelta = Math.round((recentAvgKills - olderAvgKills) * 10) / 10;
+
+    return {
+      count: recent.length,
+      recentSuccessRate,
+      recentTop1Count,
+      recentAvgKills,
+      killsDelta,
+      pills: recentMetrics.map((m) => m.isSuccess),
+    };
+  }, [tabBaseVideos]);
+
+  const sharedSettingsModal = (
+    <UnifiedSettingsModal
+      isOpen={showUnifiedSettings}
+      initialTab={settingsInitialTab}
+      activeGameTab={token ? activeGameTab : searchGame}
+      appVersion={APP_VERSION}
+      appSettings={appSettings}
+      onUpdateAppSettings={onUpdateAppSettings}
+      onSwitchGameThemePreview={(g) => {
+        if (token) {
+          void handleSwitchGameTab(g);
+        } else {
+          setSearchGame(g);
+        }
+      }}
+      isElectronRuntime={isElectronRuntime}
+      isOverwolfRuntime={isOverwolfRuntime}
+      captureMode={captureMode}
+      onToggleCaptureMode={handleToggleCaptureMode}
+      autoStartEnabled={autoStartEnabled}
+      onToggleAutoStart={handleToggleAutoStart}
+      captureStatus={desktopCaptureStatus}
+      screenSources={screenSources}
+      onToggleDesktopCapture={handleToggleDesktopCapture}
+      onUpdateCaptureOptions={handleUpdateCaptureOptions}
+      testingCapture={testingCapture}
+      onTestCaptureFrame={handleTestCaptureFrame}
+      checkingOverwolf={checkingOverwolf}
+      onCheckOverwolf={handleCheckOverwolf}
+      onOpenOverwolfDownload={handleOpenOverwolfDownload}
+      pinnedMatchIds={videos.filter((v) => v.is_pinned).map((v) => v.match_id)}
+      profile={profile}
+      pubgIgnInput={pubgIgnInput}
+      onChangePubgIgnInput={setPubgIgnInput}
+      savingPubgIgn={savingPubgIgn}
+      onSavePubgIgn={handleSavePubgIgn}
+      onLinkSteam={handleLinkSteamAccount}
+      onLinkRiot={handleLinkRiotAccount}
+      onSwitchRiotAccount={() => handleRiotLogin(true)}
+      unlinkingRiot={unlinkingRiot}
+      onUnlinkRiot={handleUnlinkRiot}
+      onBackupRestored={(restored) => {
+        onReplaceAppSettings(restored);
+        setDataRevision((r) => r + 1);
+      }}
+      onClose={() => setShowUnifiedSettings(false)}
+    />
+  );
+
   // ==========================================================================
-  // 1. TRANG GIOI THIEU & XAC THUC (ASYMMETRIC TELEMETRY LANDING)
+  // 1. PRE-LOGIN LANDING (DYNAMIC GAME THEME + BILINGUAL EN DEFAULT)
   // ==========================================================================
   if (!token) {
+    const landingValo = searchGame === 'VALORANT';
+
     return (
-      <div className="min-h-[100dvh] bg-[#0A0D12] tactical-grid-bg text-[#EEF2F6] flex flex-col">
+      <div
+        data-game-theme={landingValo ? 'valorant' : 'pubg'}
+        className={`min-h-[100dvh] game-theme-backdrop ${
+          appSettings.themeEffects ? 'theme-fx-on' : 'tactical-grid-bg'
+        } text-[#EEF2F6] flex flex-col`}
+      >
+        {/* Dynamic Game Theme Top Ribbon */}
+        <div
+          className={`h-[3px] w-full transition-colors duration-300 ${
+            landingValo
+              ? 'bg-gradient-to-r from-[#FF4655] via-[#FF4655]/80 to-[#38BDF8]'
+              : 'bg-gradient-to-r from-[#E59A23] via-[#E59A23]/80 to-[#10B981]'
+          }`}
+        />
+
         <header className="h-16 border-b border-[#232B3B] bg-[#0A0D12]/90 backdrop-blur-sm">
           <div className="max-w-7xl mx-auto h-full px-6 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-[2px] bg-[#FF4655] flex items-center justify-center font-display font-bold text-[#EEF2F6] text-sm">
+              <div
+                className={`h-8 w-8 rounded-[2px] flex items-center justify-center font-display font-bold text-sm transition-colors duration-200 ${
+                  landingValo
+                    ? 'bg-[#FF4655] text-[#EEF2F6] theme-cut-valo'
+                    : 'bg-[#E59A23] text-[#0A0D12]'
+                }`}
+              >
                 TR
               </div>
               <span className="font-display text-lg font-bold tracking-tight text-[#EEF2F6]">
-                TacticalReplay<span className="text-[#FF4655]">AI</span>
+                TacticalReplay
+                <span className={landingValo ? 'text-[#FF4655]' : 'text-[#E59A23]'}>AI</span>
               </span>
             </div>
 
-            <div className="flex items-center gap-4">
-              <nav aria-label="Pháp lý và tuân thủ" className="hidden sm:flex items-center gap-4 text-xs text-[#94A3B8]">
+            <div className="flex items-center gap-3">
+              <nav
+                aria-label={tr('Legal and compliance links', 'Pháp lý và tuân thủ')}
+                className="hidden md:flex items-center gap-4 text-xs text-[#94A3B8]"
+              >
                 <a
                   href={`${serverRootUrl}/privacy`}
                   target="_blank"
                   rel="noreferrer"
                   className="hover:text-[#EEF2F6] transition duration-150"
                 >
-                  Chính sách bảo mật
+                  {tr('Privacy Policy', 'Chính sách bảo mật')}
                 </a>
                 <a
                   href={`${serverRootUrl}/terms`}
@@ -1119,14 +1557,26 @@ const App: React.FC = () => {
                   rel="noreferrer"
                   className="hover:text-[#EEF2F6] transition duration-150"
                 >
-                  Điều khoản
+                  {tr('Terms of Service', 'Điều khoản')}
                 </a>
               </nav>
 
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 font-mono text-[11px] font-bold text-[#10B981]">
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 font-mono text-[11px] font-bold text-[#10B981]">
                 <ShieldCheck size={14} weight="bold" aria-hidden="true" />
-                <span>Tuân thủ Vanguard &amp; BattlEye</span>
+                <span>{tr('Vanguard & BattlEye Safe', 'Tuân thủ Vanguard & BattlEye')}</span>
               </span>
+
+              <LanguageQuickToggle lang={lang} onChangeLang={setLang} />
+
+              <button
+                type="button"
+                onClick={() => openSettingsAt('GENERAL')}
+                title={tr('Settings (Ctrl+,)', 'Cài đặt (Ctrl+,)')}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150"
+              >
+                <GearSix size={14} weight="bold" aria-hidden="true" />
+                <span>{tr('Settings', 'Cài đặt')}</span>
+              </button>
             </div>
           </div>
         </header>
@@ -1135,32 +1585,52 @@ const App: React.FC = () => {
           id="main-content"
           className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 lg:py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center"
         >
-          {/* Cot trai: Hero Briefing + Tra cuu ho so */}
+          {/* Left Column: Hero Briefing + Player Lookup */}
           <motion.section
-            aria-label="Giới thiệu và tra cứu người chơi"
+            aria-label={tr('Overview and player search', 'Giới thiệu và tra cứu người chơi')}
             initial={reduceMotion ? false : { opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
             className="lg:col-span-7 space-y-6"
           >
             <div className="space-y-3">
-              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-[#E59A23] flex items-center gap-2">
+              <p
+                className={`font-mono text-[11px] font-bold uppercase tracking-[0.16em] flex items-center gap-2 transition-colors duration-200 ${
+                  landingValo ? 'text-[#FF4655]' : 'text-[#E59A23]'
+                }`}
+              >
                 <Broadcast size={14} weight="bold" aria-hidden="true" />
-                <span>Xem lại Video Replay &amp; Dữ liệu sau trận</span>
+                <span>
+                  {landingValo
+                    ? tr(
+                        'VALORANT PROTOCOL // RSO & ROUND ECONOMY REVIEW',
+                        'VALORANT PROTOCOL // PHÂN TÍCH RSO & KINH TẾ ROUND'
+                      )
+                    : tr(
+                        'PUBG TELEMETRY // 2D ZONE ROTATION & REPLAY REVIEW',
+                        'PUBG TELEMETRY // SƠ ĐỒ VÒNG BO 2D & VIDEO REPLAY'
+                      )}
+                </span>
               </p>
               <h1 className="font-display text-[clamp(1.85rem,3.4vw,2.9rem)] font-bold tracking-tight leading-[1.08] text-[#EEF2F6] text-balance">
-                Phân tích chiến thuật sau trận đấu cho VALORANT &amp; PUBG
+                {tr(
+                  'Post-Match Tactical Replay & AI Coach for VALORANT & PUBG',
+                  'Phân tích chiến thuật sau trận đấu cho VALORANT & PUBG'
+                )}
               </h1>
               <p className="text-sm text-[#94A3B8] max-w-[56ch] leading-relaxed">
-                Tự động ghi hình highlight, đồng bộ mốc hạ gục theo từng round và nhận đánh giá AI Coach thực chiến.
+                {tr(
+                  'Auto-capture kill highlights, scrub combat markers round-by-round, draw on VOD frames with Telestrator, and review actionable AI Coach feedback.',
+                  'Tự động ghi hình highlight, đồng bộ mốc hạ gục theo từng round/vòng bo, vẽ sa bàn chiến thuật và nhận đánh giá từ AI Coach.'
+                )}
               </p>
             </div>
 
             {/* Player Lookup Terminal */}
-            <div className="bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 space-y-4">
+            <div className="theme-surface-card border border-[#232B3B] rounded-[4px] p-4 space-y-4">
               <div className="flex items-center justify-between gap-2 border-b border-[#232B3B] pb-2.5">
                 <span className="font-mono text-[11px] font-bold text-[#94A3B8]">
-                  TRA CỨU NHANH HỒ SƠ NGƯỜI CHƠI
+                  {tr('QUICK PLAYER PROFILE LOOKUP', 'TRA CỨU NHANH HỒ SƠ NGƯỜI CHƠI')}
                 </span>
                 <span className="font-mono text-[10px] text-[#64748B]">
                   PUBG SHARD / RIOT ACCOUNT-V1
@@ -1193,7 +1663,7 @@ const App: React.FC = () => {
                     }}
                     className={`px-3 py-2 rounded-[2px] font-mono text-xs font-bold transition duration-150 ${
                       searchGame === 'VALORANT'
-                        ? 'bg-[#FF4655] text-[#EEF2F6]'
+                        ? 'bg-[#FF4655] text-[#EEF2F6] theme-cut-valo'
                         : 'text-[#94A3B8] hover:text-[#EEF2F6]'
                     }`}
                   >
@@ -1203,8 +1673,8 @@ const App: React.FC = () => {
 
                 <label htmlFor="landing-player-search" className="sr-only">
                   {searchGame === 'PUBG'
-                    ? 'Tên nhân vật PUBG cần tìm'
-                    : 'Riot ID đầy đủ cần tìm'}
+                    ? tr('PUBG player name to search', 'Tên nhân vật PUBG cần tìm')
+                    : tr('Full Riot ID to search', 'Riot ID đầy đủ cần tìm')}
                 </label>
                 <input
                   id="landing-player-search"
@@ -1213,8 +1683,8 @@ const App: React.FC = () => {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={
                     searchGame === 'PUBG'
-                      ? 'Nhập tên nhân vật PUBG...'
-                      : 'Nhập Riot ID#Tag (VD: Player#VN1)...'
+                      ? tr('Enter exact PUBG IGN...', 'Nhập tên nhân vật PUBG...')
+                      : tr('Enter Riot ID#Tag (e.g. Player#NA1)...', 'Nhập Riot ID#Tag (VD: Player#VN1)...')
                   }
                   className="flex-1 min-w-0 px-3.5 py-2.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#EEF2F6] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
                 />
@@ -1225,11 +1695,13 @@ const App: React.FC = () => {
                   className={`inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-[2px] font-bold text-xs transition duration-150 shrink-0 disabled:opacity-50 active:translate-y-[1px] ${
                     searchGame === 'PUBG'
                       ? 'bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12]'
-                      : 'bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6]'
+                      : 'bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] theme-cut-valo'
                   }`}
                 >
                   <MagnifyingGlass size={14} weight="bold" aria-hidden="true" />
-                  <span>{searching ? 'Đang tìm...' : 'Tìm kiếm'}</span>
+                  <span>
+                    {searching ? tr('Searching...', 'Đang tìm...') : tr('Search', 'Tìm kiếm')}
+                  </span>
                 </button>
               </form>
 
@@ -1271,8 +1743,8 @@ const App: React.FC = () => {
                     >
                       <span>
                         {searchResult.gameType === 'PUBG'
-                          ? 'Đăng nhập Steam'
-                          : 'Đăng nhập RSO'}
+                          ? tr('Sign in with Steam', 'Đăng nhập Steam')
+                          : tr('Sign in with Riot RSO', 'Đăng nhập RSO')}
                       </span>
                       <ArrowRight size={12} weight="bold" aria-hidden="true" />
                     </button>
@@ -1288,7 +1760,7 @@ const App: React.FC = () => {
                           <div className="flex justify-between font-mono text-[10px] text-[#94A3B8]">
                             <span className="font-bold text-[#EEF2F6]">{m.mapName}</span>
                             <span className="tabular-nums">
-                              {new Date(m.playedAt).toLocaleDateString('vi-VN')}
+                              {new Date(m.playedAt).toLocaleDateString(localeCode)}
                             </span>
                           </div>
                           <p className="font-mono text-[#E59A23] font-bold tabular-nums">
@@ -1302,11 +1774,14 @@ const App: React.FC = () => {
                     </div>
                   ) : (
                     <p className="text-xs text-[#94A3B8]">
-                      Hồ sơ hợp lệ (ID:{' '}
+                      {tr('Verified Riot account (ID:', 'Hồ sơ hợp lệ (ID:')}{' '}
                       <span className="font-mono text-[#EEF2F6]">
                         {searchResult.player.id.slice(0, 18)}...
                       </span>
-                      ). Đăng nhập Riot Sign On để đồng bộ lịch sử trận đấu và video replay.
+                      {tr(
+                        '). Sign in via Riot Sign On to sync match history and replay clips.',
+                        '). Đăng nhập Riot Sign On để đồng bộ lịch sử trận đấu và video replay.'
+                      )}
                     </p>
                   )}
                 </div>
@@ -1314,16 +1789,23 @@ const App: React.FC = () => {
             </div>
           </motion.section>
 
-          {/* Cot phai: Hai cong dang nhap chinh thuc */}
+          {/* Right Column: Official Game Portals */}
           <motion.section
-            aria-label="Cổng đăng nhập tài khoản game"
+            aria-label={tr('Official game sign-in portals', 'Cổng đăng nhập tài khoản game')}
             initial={reduceMotion ? false : { opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4, delay: 0.06, ease: [0.16, 1, 0.3, 1] }}
             className="lg:col-span-5 space-y-4"
           >
-            {/* Card PUBG */}
-            <div className="bg-[#10141C] border border-[#232B3B] hover:border-[#E59A23]/60 rounded-[4px] p-5 space-y-4 transition duration-200">
+            {/* PUBG Portal Card */}
+            <div
+              onMouseEnter={() => setSearchGame('PUBG')}
+              className={`theme-surface-card rounded-[4px] p-5 space-y-4 border transition duration-200 ${
+                !landingValo
+                  ? 'border-[#E59A23]/70 shadow-[0_0_24px_rgba(229,154,35,0.08)]'
+                  : 'border-[#232B3B] hover:border-[#E59A23]/60'
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="px-2 py-0.5 rounded-[2px] bg-[#E59A23]/15 border border-[#E59A23]/40 font-mono text-[10px] font-bold text-[#E59A23]">
                   PUBG: BATTLEGROUNDS
@@ -1335,10 +1817,13 @@ const App: React.FC = () => {
 
               <div className="space-y-1.5">
                 <h2 className="font-display text-lg font-bold text-[#EEF2F6]">
-                  Không gian chiến thuật PUBG
+                  {tr('PUBG Tactical Cockpit', 'Không gian chiến thuật PUBG')}
                 </h2>
                 <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[45ch]">
-                  Theo dõi sát thương theo từng giai đoạn vòng bo (Phase), vũ khí, cự ly hạ gục và video replay tự động.
+                  {tr(
+                    'Track safe-zone phase rotations on 2D maps, weapon ballistics, kill distances, and automatic highlight clips.',
+                    'Theo dõi sát thương theo từng giai đoạn vòng bo (Phase), vũ khí, cự ly hạ gục và video replay tự động.'
+                  )}
                 </p>
               </div>
 
@@ -1348,12 +1833,19 @@ const App: React.FC = () => {
                 className="w-full py-3 px-4 rounded-[2px] bg-[#1B2838] hover:bg-[#24364B] border border-[#38BDF8]/35 text-[#EEF2F6] font-bold text-xs transition duration-150 flex items-center justify-center gap-2.5 active:translate-y-[1px]"
               >
                 <SteamBrandMark />
-                <span>Đăng nhập bằng Steam</span>
+                <span>{tr('Sign in with Steam', 'Đăng nhập bằng Steam')}</span>
               </button>
             </div>
 
-            {/* Card VALORANT */}
-            <div className="bg-[#10141C] border border-[#232B3B] hover:border-[#FF4655]/60 rounded-[4px] p-5 space-y-4 transition duration-200">
+            {/* VALORANT Portal Card */}
+            <div
+              onMouseEnter={() => setSearchGame('VALORANT')}
+              className={`theme-surface-card rounded-[4px] p-5 space-y-4 border transition duration-200 ${
+                landingValo
+                  ? 'border-[#FF4655]/70 shadow-[0_0_24px_rgba(255,70,85,0.09)]'
+                  : 'border-[#232B3B] hover:border-[#FF4655]/60'
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="px-2 py-0.5 rounded-[2px] bg-[#FF4655]/15 border border-[#FF4655]/40 font-mono text-[10px] font-bold text-[#FF4655]">
                   VALORANT
@@ -1363,16 +1855,21 @@ const App: React.FC = () => {
                     providers.riotRsoReady ? 'text-[#10B981]' : 'text-[#E59A23]'
                   }`}
                 >
-                  {providers.riotRsoReady ? 'RSO SẴN SÀNG' : 'CHỜ RSO CLIENT ID'}
+                  {providers.riotRsoReady
+                    ? tr('RSO READY', 'RSO SẴN SÀNG')
+                    : tr('PENDING RSO KEY', 'CHỜ RSO CLIENT ID')}
                 </span>
               </div>
 
               <div className="space-y-1.5">
                 <h2 className="font-display text-lg font-bold text-[#EEF2F6]">
-                  Không gian chiến thuật VALORANT
+                  {tr('VALORANT Protocol Cockpit', 'Không gian chiến thuật VALORANT')}
                 </h2>
                 <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[45ch]">
-                  Xác thực chính thức qua Riot Sign On (RSO), phân tích kinh tế round (Eco, Force, Full Buy) và lỗi vị trí.
+                  {tr(
+                    'Official Riot Sign On (RSO) opt-in, round economy breakdowns (Eco, Force, Full Buy), and untraded death review.',
+                    'Xác thực chính thức qua Riot Sign On (RSO), phân tích kinh tế round (Eco, Force, Full Buy) và lỗi vị trí.'
+                  )}
                 </p>
               </div>
 
@@ -1380,15 +1877,18 @@ const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleRiotLogin(false)}
-                  className="w-full py-3 px-4 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 flex items-center justify-center gap-2.5 active:translate-y-[1px]"
+                  className="w-full py-3 px-4 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 flex items-center justify-center gap-2.5 active:translate-y-[1px] theme-cut-valo"
                 >
                   <RiotBrandMark />
-                  <span>Đăng nhập bằng Riot Sign On (RSO)</span>
+                  <span>{tr('Sign in with Riot Sign On (RSO)', 'Đăng nhập bằng Riot Sign On (RSO)')}</span>
                 </button>
 
                 {!providers.riotRsoReady && (
                   <p className="font-mono text-[11px] text-[#E59A23] leading-relaxed">
-                    Cần cấu hình RIOT_CLIENT_ID &amp; RIOT_CLIENT_SECRET từ Riot Developer Portal trong server/.env.
+                    {tr(
+                      'Awaiting production RIOT_CLIENT_ID & RIOT_CLIENT_SECRET approval from Riot Developer Portal.',
+                      'Đang chờ cấp RIOT_CLIENT_ID & RIOT_CLIENT_SECRET chính thức từ Riot Developer Portal.'
+                    )}
                   </p>
                 )}
               </div>
@@ -1396,24 +1896,37 @@ const App: React.FC = () => {
           </motion.section>
         </main>
 
-        <AppFooterVersion isElectronRuntime={isElectronRuntime} />
+        <AppFooterVersion
+          isElectronRuntime={isElectronRuntime}
+          onOpenSettings={() => openSettingsAt('GENERAL')}
+        />
+        {sharedSettingsModal}
         <UpdateBanner />
       </div>
     );
   }
 
   // ==========================================================================
-  // 2. KHONG GIAN COCKPIT SAU DANG NHAP (XOAY VONG 20 TRAN & HIGHLIGHT)
+  // 2. AUTHENTICATED COCKPIT (GAME THEME HUD + UNIFIED SETTINGS + FORM TRACKER)
   // ==========================================================================
   const isValo = activeGameTab === 'VALORANT';
-  const tabBaseVideos = videos.filter((v) => v.game_type === activeGameTab);
+  const valoCount = Math.min(20, videos.filter((v) => v.game_type === 'VALORANT').length);
+  const pubgCount = Math.min(20, videos.filter((v) => v.game_type === 'PUBG').length);
+
   const filteredVideos = tabBaseVideos.filter((v) => {
+    const ann = annotationsMap[v.match_id];
+    const hasAnn = Boolean(ann && (ann.tags.length > 0 || ann.note.trim().length > 0));
     const query = matchSearchText.trim().toLowerCase();
+
     if (query) {
-      const haystack = `${v.map_name} ${v.game_mode} ${v.match_result} ${v.score_summary || ''}`.toLowerCase();
+      const tagsText = ann ? `${ann.tags.map((t) => `#${t}`).join(' ')} ${ann.note}` : '';
+      const haystack =
+        `${v.map_name} ${v.game_mode} ${v.match_result} ${v.score_summary || ''} ${tagsText}`.toLowerCase();
       if (!haystack.includes(query)) return false;
     }
+
     if (matchFilterMode === 'PINNED') return Boolean(v.is_pinned);
+    if (matchFilterMode === 'NOTES') return hasAnn;
     if (matchFilterMode === 'CLIPS') {
       return Boolean(v.cloud_video_url || getLocalVideoByMatchId(v.match_id));
     }
@@ -1429,57 +1942,91 @@ const App: React.FC = () => {
     }
     return true;
   });
+
   const activeMatch =
     tabBaseVideos.find((v) => v.match_id === selectedMatchId) ||
     filteredVideos.find((v) => v.match_id === selectedMatchId);
   const activeRound = rounds.find((r) => r.roundNumber === selectedRound);
   const hasRiotLinked = Boolean(profile?.has_riot_linked);
-  const isOverwolfRuntime =
-    typeof overwolf !== 'undefined' && Boolean(overwolf.media?.replays || overwolf.streaming);
+  const activeHotkeyLabel = desktopCaptureStatus?.hotkey || 'F9';
+
+  const refreshIntervalText =
+    appSettings.autoRefreshSec === 0
+      ? tr('Manual refresh only', 'Chỉ làm mới thủ công')
+      : appSettings.autoRefreshSec < 60
+        ? tr(`Auto-sync every ${appSettings.autoRefreshSec}s`, `Tự làm mới ${appSettings.autoRefreshSec}s/lần`)
+        : tr(
+            `Auto-sync every ${appSettings.autoRefreshSec / 60}m`,
+            `Tự làm mới ${appSettings.autoRefreshSec / 60} phút/lần`
+          );
 
   return (
-    <div className="min-h-[100dvh] bg-[#0A0D12] text-[#EEF2F6] flex flex-col">
-      {/* Command Header - 1 dong tren desktop */}
-      <header className="min-h-[60px] border-b border-[#232B3B] px-5 py-2.5 bg-[#10141C] flex flex-wrap items-center justify-between gap-3">
+    <div
+      data-game-theme={isValo ? 'valorant' : 'pubg'}
+      className={`min-h-[100dvh] game-theme-backdrop ${
+        appSettings.themeEffects ? 'theme-fx-on' : ''
+      } text-[#EEF2F6] flex flex-col`}
+    >
+      {/* Top 3px Dynamic Game Theme Accent Ribbon */}
+      <div
+        className={`h-[3px] w-full transition-colors duration-300 ${
+          isValo
+            ? 'bg-gradient-to-r from-[#FF4655] via-[#FF4655]/85 to-[#38BDF8]'
+            : 'bg-gradient-to-r from-[#E59A23] via-[#E59A23]/85 to-[#10B981]'
+        }`}
+      />
+
+      {/* Command Header */}
+      <header className="min-h-[60px] border-b border-[#232B3B] px-5 py-2.5 bg-[#10141C]/95 backdrop-blur-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
             <div
-              className={`h-7 w-7 rounded-[2px] flex items-center justify-center font-display font-bold text-xs ${
-                isValo ? 'bg-[#FF4655] text-[#EEF2F6]' : 'bg-[#E59A23] text-[#0A0D12]'
+              className={`h-7 w-7 rounded-[2px] flex items-center justify-center font-display font-bold text-xs transition-colors duration-200 ${
+                isValo
+                  ? 'bg-[#FF4655] text-[#EEF2F6] theme-cut-valo'
+                  : 'bg-[#E59A23] text-[#0A0D12]'
               }`}
             >
               TR
             </div>
             <h1 className="font-display text-base font-bold tracking-tight text-[#EEF2F6]">
-              TacticalReplayAI
+              TacticalReplay<span className={isValo ? 'text-[#FF4655]' : 'text-[#E59A23]'}>AI</span>
             </h1>
           </div>
 
-          <div className="flex items-center gap-1 p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
+          {/* Game Theme Switcher */}
+          <div
+            role="group"
+            aria-label={tr('Select active game workspace', 'Chọn game đang phân tích')}
+            className="flex items-center gap-1 p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]"
+          >
             <button
               type="button"
+              aria-pressed={isValo}
               onClick={() => void handleSwitchGameTab('VALORANT')}
               className={`px-3 py-1.5 rounded-[2px] font-mono text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                 isValo
-                  ? 'bg-[#FF4655] text-[#EEF2F6]'
+                  ? 'bg-[#FF4655] text-[#EEF2F6] theme-cut-valo shadow-[0_0_14px_rgba(255,70,85,0.28)]'
                   : 'text-[#94A3B8] hover:text-[#EEF2F6]'
               }`}
             >
-              VALORANT ({Math.min(20, videos.filter((v) => v.game_type === 'VALORANT').length)})
+              VALORANT ({valoCount})
             </button>
             <button
               type="button"
+              aria-pressed={!isValo}
               onClick={() => void handleSwitchGameTab('PUBG')}
               className={`px-3 py-1.5 rounded-[2px] font-mono text-xs font-bold transition duration-150 active:translate-y-[1px] ${
                 !isValo
-                  ? 'bg-[#E59A23] text-[#0A0D12]'
+                  ? 'bg-[#E59A23] text-[#0A0D12] shadow-[0_0_14px_rgba(229,154,35,0.25)]'
                   : 'text-[#94A3B8] hover:text-[#EEF2F6]'
               }`}
             >
-              PUBG ({Math.min(20, videos.filter((v) => v.game_type === 'PUBG').length)})
+              PUBG ({pubgCount})
             </button>
           </div>
 
+          {/* Streamlined Action Bar */}
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
@@ -1487,32 +2034,27 @@ const App: React.FC = () => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150 active:translate-y-[1px]"
             >
               <Trophy size={14} weight="bold" aria-hidden="true" />
-              <span>Bảng xếp hạng</span>
+              <span>{tr('Leaderboard', 'Bảng xếp hạng')}</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setShowSettingsVault(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#10B981] transition duration-150 active:translate-y-[1px]"
-            >
-              <SlidersHorizontal size={14} weight="bold" aria-hidden="true" />
-              <span>Kho Sens &amp; Tâm</span>
-            </button>
+
             <button
               type="button"
               onClick={() => setShowTrendModal(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
             >
               <ChartBar size={14} weight="bold" aria-hidden="true" />
-              <span>Phong độ 20 trận</span>
+              <span>{tr('20-Match Form', 'Phong độ 20 trận')}</span>
             </button>
+
             <button
               type="button"
-              onClick={() => setShowStorageModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150 active:translate-y-[1px]"
+              onClick={() => openSettingsAt('SENS')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#10B981] transition duration-150 active:translate-y-[1px]"
             >
-              <HardDrive size={14} weight="bold" aria-hidden="true" />
-              <span>Kho Clip &amp; R2</span>
+              <SlidersHorizontal size={14} weight="bold" aria-hidden="true" />
+              <span>{tr('Sens & Crosshair', 'Kho Sens & Tâm')}</span>
             </button>
+
             {activeMatch && (
               <>
                 <button
@@ -1521,7 +2063,7 @@ const App: React.FC = () => {
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#E59A23] transition duration-150 active:translate-y-[1px]"
                 >
                   <Crosshair size={14} weight="bold" aria-hidden="true" />
-                  <span>Tóm tắt trận</span>
+                  <span>{tr('Recap', 'Tóm tắt trận')}</span>
                 </button>
                 <button
                   type="button"
@@ -1529,39 +2071,60 @@ const App: React.FC = () => {
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                 >
                   <ShareNetwork size={14} weight="bold" aria-hidden="true" />
-                  <span>Chia sẻ link</span>
+                  <span>{tr('Share', 'Chia sẻ')}</span>
                 </button>
               </>
             )}
+
+            <button
+              type="button"
+              onClick={() => openSettingsAt('GENERAL')}
+              title={tr(
+                'Unified Settings: Language, Hotkeys, Capture, Storage, Accounts (Ctrl+,)',
+                'Trung tâm Cài đặt: Ngôn ngữ, Phím tắt, Quay clip, Kho lưu trữ, Tài khoản (Ctrl+,)'
+              )}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] border text-xs font-bold transition duration-150 active:translate-y-[1px] ${
+                isValo
+                  ? 'bg-[#FF4655]/15 hover:bg-[#FF4655]/25 border-[#FF4655]/45 text-[#EEF2F6]'
+                  : 'bg-[#E59A23]/15 hover:bg-[#E59A23]/25 border-[#E59A23]/45 text-[#EEF2F6]'
+              }`}
+            >
+              <GearSix size={14} weight="bold" aria-hidden="true" />
+              <span>{tr('Settings', 'Cài đặt')}</span>
+            </button>
           </div>
         </div>
 
-        {/* Account Pills + Sign Out */}
-        <div className="flex items-center gap-2.5">
-          {profile?.steam_persona_name && (
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-[2px] bg-[#1B2838] border border-[#38BDF8]/30 text-xs font-semibold text-[#EEF2F6]">
-              {profile.steam_avatar && (
-                <img
-                  src={profile.steam_avatar}
-                  alt={`Ảnh đại diện Steam của ${profile.steam_persona_name}`}
-                  className="w-4 h-4 rounded-[2px]"
-                />
-              )}
-              <span>{profile.steam_persona_name}</span>
-            </div>
-          )}
+        {/* Language Pill + Account Badges + Sign Out */}
+        <div className="flex flex-wrap items-center gap-2">
+          <LanguageQuickToggle lang={lang} onChangeLang={setLang} />
 
-          {profile?.riot_game_name && (
-            <span className="px-2.5 py-1 rounded-[2px] bg-[#FF4655]/15 border border-[#FF4655]/40 font-mono text-xs font-semibold text-[#FF4655]">
-              {profile.riot_game_name}#{profile.riot_tag_line}
+          <button
+            type="button"
+            onClick={() => openSettingsAt('ACCOUNTS')}
+            title={tr('Manage linked game accounts', 'Quản lý tài khoản game đã liên kết')}
+            className="inline-flex items-center gap-2 px-2.5 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150"
+          >
+            {profile?.steam_avatar && !isValo && (
+              <img
+                src={profile.steam_avatar}
+                alt={tr(
+                  `Steam avatar of ${profile.steam_persona_name || 'player'}`,
+                  `Ảnh đại diện Steam của ${profile.steam_persona_name || 'người chơi'}`
+                )}
+                className="w-4 h-4 rounded-[2px]"
+              />
+            )}
+            <span className="font-mono">
+              {isValo
+                ? profile?.riot_game_name
+                  ? `${profile.riot_game_name}#${profile.riot_tag_line}`
+                  : profile?.steam_persona_name || tr('Link Riot ID', 'Liên kết Riot')
+                : profile?.pubg_player_name
+                  ? `IGN: ${profile.pubg_player_name}`
+                  : profile?.steam_persona_name || tr('Set PUBG IGN', 'Cài đặt IGN')}
             </span>
-          )}
-
-          {!isValo && profile?.pubg_player_name && (
-            <span className="px-2.5 py-1 rounded-[2px] bg-[#E59A23]/15 border border-[#E59A23]/40 font-mono text-xs font-semibold text-[#E59A23]">
-              IGN: {profile.pubg_player_name}
-            </span>
-          )}
+          </button>
 
           <button
             type="button"
@@ -1569,25 +2132,83 @@ const App: React.FC = () => {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#0A0D12] hover:bg-[#F43F5E]/15 border border-[#232B3B] hover:border-[#F43F5E]/40 text-xs text-[#94A3B8] hover:text-[#F43F5E] transition duration-150 active:translate-y-[1px]"
           >
             <SignOut size={14} weight="bold" aria-hidden="true" />
-            <span>Đăng xuất</span>
+            <span>{tr('Sign Out', 'Đăng xuất')}</span>
           </button>
         </div>
       </header>
+
+      {/* Animated Game Theme Identity Banner */}
+      <div className="border-b border-[#232B3B]/80 bg-[#0A0D12]/65 px-5 py-2">
+        <div className="max-w-[1640px] mx-auto">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={activeGameTab}
+              initial={reduceMotion ? false : { opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? undefined : { opacity: 0, y: 4 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="flex flex-wrap items-center justify-between gap-2 text-xs"
+            >
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span
+                  className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold tracking-wider uppercase border ${
+                    isValo
+                      ? 'bg-[#FF4655]/15 border-[#FF4655]/45 text-[#FF4655] theme-cut-valo'
+                      : 'bg-[#E59A23]/15 border-[#E59A23]/45 text-[#E59A23]'
+                  }`}
+                >
+                  {isValo ? 'PROTOCOL // VALORANT' : 'BATTLEGROUNDS // TELEMETRY'}
+                </span>
+                <span className="text-[#94A3B8] text-[11px]">
+                  {isValo
+                    ? tr(
+                        'Round Economy (Eco / Force / Full Buy) | Opening Pick & Untraded Death Review | Telestrator VOD',
+                        'Kinh tế Round (Eco / Force / Full Buy) | Phân tích Opening Pick & Lỗi vị trí | Bút vẽ Telestrator'
+                      )
+                    : tr(
+                        '2D Safe-Zone Phase Rotations | Weapon Ballistics & Kill Distance | Auto-Highlight Replay',
+                        'Sơ đồ di chuyển Vòng Bo 2D | Thống kê đạn đạo & Cự ly hạ gục | Tự động cắt Highlight'
+                      )}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 font-mono text-[10px] text-[#94A3B8]">
+                {isElectronRuntime && (
+                  <button
+                    type="button"
+                    onClick={() => openSettingsAt('CAPTURE')}
+                    className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#38BDF8] transition duration-150"
+                  >
+                    {tr(`Clip Hotkey: ${activeHotkeyLabel}`, `Phím cắt: ${activeHotkeyLabel}`)}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openSettingsAt('STORAGE')}
+                  className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+                >
+                  {tr('Clips & R2 Storage', 'Kho Clip & R2')}
+                </button>
+              </div>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </div>
 
       {statusMsg && (
         <div
           role="status"
           className="bg-[#10141C] border-b border-[#232B3B] px-5 py-2 text-xs text-[#38BDF8] flex justify-between items-center gap-4"
         >
-          <span>{statusMsg}</span>
+          <span>{ts(statusMsg, statusMsg, statusMsg)}</span>
           <button
             type="button"
-            aria-label="Đóng thông báo"
+            aria-label={tr('Dismiss notification', 'Đóng thông báo')}
             onClick={() => setStatusMsg(null)}
             className="inline-flex items-center gap-1 text-[#94A3B8] hover:text-[#EEF2F6]"
           >
             <X size={13} weight="bold" aria-hidden="true" />
-            <span>Đóng</span>
+            <span>{tr('Close', 'Đóng')}</span>
           </button>
         </div>
       )}
@@ -1597,24 +2218,30 @@ const App: React.FC = () => {
         id="main-content"
         className="flex-1 max-w-[1640px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 p-4"
       >
-        {/* Cot trai: Danh sach 20 tran gan nhat */}
+        {/* Left Sidebar: Capture Status, 5-Match Session Form, Match History */}
         <aside
-          aria-label="Danh sách trận đấu"
-          className="lg:col-span-3 bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-3"
+          aria-label={tr('Match history and session status', 'Danh sách trận đấu và trạng thái')}
+          className="lg:col-span-3 theme-surface-card bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-3"
         >
           <div className="flex items-center justify-between border-b border-[#232B3B] pb-2.5">
             <div>
               <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] tabular-nums">
                 {isValo
-                  ? `20 Trận VALORANT (${filteredVideos.length}/20)`
-                  : `20 Trận PUBG (${filteredVideos.length}/20)`}
+                  ? tr(
+                      `20 VALORANT Matches (${filteredVideos.length}/20)`,
+                      `20 Trận VALORANT (${filteredVideos.length}/20)`
+                    )
+                  : tr(
+                      `20 PUBG Matches (${filteredVideos.length}/20)`,
+                      `20 Trận PUBG (${filteredVideos.length}/20)`
+                    )}
               </h2>
               <p className="font-mono text-[10px] text-[#64748B] tabular-nums mt-0.5">
                 {autoRefreshing
-                  ? 'Đang tự đồng bộ...'
+                  ? tr('Syncing latest telemetry...', 'Đang tự đồng bộ...')
                   : lastSyncedAt
-                    ? `Tự làm mới 1 phút/lần (${lastSyncedAt})`
-                    : 'Tự làm mới mỗi 1 phút'}
+                    ? `${refreshIntervalText} (${lastSyncedAt})`
+                    : refreshIntervalText}
               </p>
             </div>
             <button
@@ -1631,39 +2258,57 @@ const App: React.FC = () => {
                 className={autoRefreshing ? 'animate-spin' : ''}
                 aria-hidden="true"
               />
-              <span>Làm mới</span>
+              <span>{tr('Refresh', 'Làm mới')}</span>
             </button>
           </div>
 
-          {/* Trang thai Overwolf Auto-Capture, chay ngam System Tray & che do quay */}
+          {/* Consolidated Capture Status Card */}
           <div className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <span
                 className={`inline-flex items-center gap-1.5 font-mono text-[11px] font-bold ${
-                  isOverwolfRuntime
+                  desktopCaptureStatus?.shouldRecord || isOverwolfRuntime
                     ? 'text-[#10B981]'
                     : isElectronRuntime
                       ? 'text-[#38BDF8]'
                       : 'text-[#94A3B8]'
                 }`}
               >
-                <Record size={12} weight="fill" aria-hidden="true" />
+                <Record
+                  size={12}
+                  weight="fill"
+                  className={desktopCaptureStatus?.shouldRecord ? 'animate-pulse' : ''}
+                  aria-hidden="true"
+                />
                 <span>
                   {isOverwolfRuntime
                     ? 'Overwolf Auto-Capture'
                     : isElectronRuntime
-                      ? 'Desktop Tray (Chạy ngầm)'
-                      : 'Web Replay'}
+                      ? desktopCaptureStatus?.shouldRecord
+                        ? tr(
+                            `Recording ${desktopCaptureStatus.activeGame}`,
+                            `Đang quay ${desktopCaptureStatus.activeGame}`
+                          )
+                        : desktopCaptureStatus?.desktopCaptureEnabled ?? true
+                          ? tr('Auto-Capture Standby', 'Chờ vào game (.exe)')
+                          : tr('Auto-Capture Paused', 'Tự quay đang tắt')
+                      : tr('Web Replay Mode', 'Chế độ Web Replay')}
                 </span>
               </span>
-              <span className="font-mono text-[10px] text-[#64748B]">
-                {captureMode === 'HIGHLIGHT_CLIPS' ? '~23s/Kill' : 'Full Match'}
-              </span>
+
+              <button
+                type="button"
+                onClick={() => openSettingsAt('CAPTURE')}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[10px] font-bold text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+              >
+                <GearSix size={11} weight="bold" aria-hidden="true" />
+                <span>{tr('Configure', 'Tùy chỉnh')}</span>
+              </button>
             </div>
 
             <div
               role="group"
-              aria-label="Chế độ quay video tự động"
+              aria-label={tr('Automatic video capture mode', 'Chế độ quay video tự động')}
               className="grid grid-cols-2 gap-1 p-0.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]"
             >
               <button
@@ -1676,7 +2321,7 @@ const App: React.FC = () => {
                     : 'text-[#64748B] hover:text-[#94A3B8]'
                 }`}
               >
-                Quay cả trận
+                {tr('Full Match', 'Quay cả trận')}
               </button>
               <button
                 type="button"
@@ -1688,279 +2333,172 @@ const App: React.FC = () => {
                     : 'text-[#64748B] hover:text-[#94A3B8]'
                 }`}
               >
-                Highlight ~23s
+                {tr('Highlight ~23s', 'Highlight ~23s')}
               </button>
             </div>
 
             {isElectronRuntime && !isOverwolfRuntime && (
-              <div className="pt-1.5 border-t border-[#232B3B]/80 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] font-bold text-[#94A3B8]">
-                    {desktopCaptureStatus?.shouldRecord
-                      ? `ĐANG QUAY ${desktopCaptureStatus.activeGame} (25s/đoạn)`
-                      : desktopCaptureStatus?.overwolfRunning
-                        ? 'Overwolf đang chạy (ưu tiên Overwolf)'
-                        : desktopCaptureStatus?.desktopCaptureEnabled
-                          ? 'Đang chờ vào VALORANT / PUBG'
-                          : 'Tự quay Highlight (.exe) đang tắt'}
-                  </span>
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${
-                      desktopCaptureStatus?.shouldRecord
-                        ? 'bg-[#10B981] animate-pulse'
-                        : 'bg-[#38BDF8]'
-                    }`}
-                    aria-hidden="true"
-                  />
-                </div>
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => void desktopRingRecorder.triggerF9Highlight(activeGameTab)}
+                  className="flex-1 py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-[10px] font-mono font-bold text-[#E59A23] transition duration-150"
+                >
+                  {tr(`Clip Now (${activeHotkeyLabel})`, `Cắt ngay (${activeHotkeyLabel})`)}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenHighlightsFolder}
+                  aria-label={tr('Open local clips folder', 'Mở thư mục lưu clip')}
+                  title={tr('Open local clips folder', 'Mở thư mục lưu clip trên máy')}
+                  className="p-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
+                >
+                  <FolderOpen size={13} weight="bold" aria-hidden="true" />
+                </button>
+              </div>
+            )}
 
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-[#94A3B8]">
-                    Tự quay ngầm (.exe + F9)
-                  </span>
-                  <button
-                    type="button"
-                    aria-pressed={desktopCaptureStatus?.desktopCaptureEnabled ?? true}
-                    onClick={() => void handleToggleDesktopCapture()}
-                    className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border transition duration-150 ${
-                      desktopCaptureStatus?.desktopCaptureEnabled ?? true
-                        ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
-                        : 'bg-[#171D28] border-[#232B3B] text-[#64748B] hover:text-[#94A3B8]'
-                    }`}
-                  >
-                    {desktopCaptureStatus?.desktopCaptureEnabled ?? true ? 'ĐANG BẬT' : 'ĐANG TẮT'}
-                  </button>
-                </div>
+            {compatNeedsRestart && (
+              <button
+                type="button"
+                onClick={() => void (window as any).electronAPI?.relaunchApp?.()}
+                className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
+              >
+                {tr('Restart App to Apply Capture Mode', 'Khởi động lại app để áp dụng')}
+              </button>
+            )}
 
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-[#94A3B8]">
-                    Chạy ngầm cùng Windows
-                  </span>
-                  <button
-                    type="button"
-                    aria-pressed={autoStartEnabled}
-                    onClick={() => void handleToggleAutoStart()}
-                    className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border transition duration-150 ${
-                      autoStartEnabled
-                        ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
-                        : 'bg-[#171D28] border-[#232B3B] text-[#64748B] hover:text-[#94A3B8]'
-                    }`}
-                  >
-                    {autoStartEnabled ? 'ĐANG BẬT' : 'ĐANG TẮT'}
-                  </button>
-                </div>
-
-                <div className="space-y-1.5 pt-1 border-t border-[#232B3B]/60">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono text-[#94A3B8]">
-                      Chất lượng (FPS)
-                    </span>
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUpdateCaptureOptions({ captureQuality: '720p30' })
-                        }
-                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
-                          (desktopCaptureStatus?.captureQuality || '720p30') === '720p30'
-                            ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981] font-bold'
-                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
-                        }`}
-                      >
-                        720p30 (Nhẹ)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUpdateCaptureOptions({ captureQuality: '1080p60' })
-                        }
-                        className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[10px] border ${
-                          desktopCaptureStatus?.captureQuality === '1080p60'
-                            ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8] font-bold'
-                            : 'bg-[#171D28] border-[#232B3B] text-[#64748B]'
-                        }`}
-                      >
-                        1080p60
-                      </button>
-                    </div>
-                  </div>
-
-                  {desktopCaptureStatus?.captureCompatMode === 'dxgi' && (
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] font-mono text-[#E59A23]">
-                        Chống đen Fullscreen: BẬT
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUpdateCaptureOptions({ captureCompatMode: 'wgc' })
-                        }
-                        className="px-1.5 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[10px] font-mono text-[#94A3B8]"
-                      >
-                        Về mặc định
-                      </button>
-                    </div>
-                  )}
-
-                  {compatNeedsRestart && (
-                    <button
-                      type="button"
-                      onClick={() => void (window as any).electronAPI?.relaunchApp?.()}
-                      className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
-                    >
-                      Khởi động lại app để áp dụng
-                    </button>
-                  )}
-
-                  {screenSources.length > 1 && (
-                    <div className="flex items-center justify-between gap-2">
-                      <label
-                        htmlFor="capture-screen-select"
-                        className="text-[10px] font-mono text-[#94A3B8] shrink-0"
-                      >
-                        Màn hình
-                      </label>
-                      <select
-                        id="capture-screen-select"
-                        value={desktopCaptureStatus?.preferredScreenId || ''}
-                        onChange={(e) =>
-                          void handleUpdateCaptureOptions({
-                            preferredScreenId: e.target.value || null,
-                          })
-                        }
-                        className="flex-1 min-w-0 px-1.5 py-0.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] text-[10px] font-mono text-[#EEF2F6]"
-                      >
-                        <option value="">Mặc định (Màn chính)</option>
-                        {screenSources.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} {s.isPrimary ? '(Chính)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => void desktopRingRecorder.triggerF9Highlight(activeGameTab)}
-                    className="flex-1 py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-[10px] font-mono font-bold text-[#E59A23] transition duration-150"
-                  >
-                    Cắt ngay ({desktopCaptureStatus?.hotkey || 'F9'})
-                  </button>
-                  <button
-                    type="button"
-                    disabled={testingCapture}
-                    onClick={() => void handleTestCaptureFrame()}
-                    className="py-1 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#38BDF8]/40 text-[10px] font-mono font-bold text-[#38BDF8] disabled:opacity-50 transition duration-150"
-                  >
-                    {testingCapture ? 'Đang thử...' : 'Test quay'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenHighlightsFolder}
-                    aria-label="Mở thư mục lưu clip"
-                    title="Mở thư mục lưu clip trên máy"
-                    className="p-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] transition duration-150"
-                  >
-                    <FolderOpen size={13} weight="bold" aria-hidden="true" />
-                  </button>
-                </div>
-
-                {blackFrameAlert && (
-                  <div className="p-2 rounded-[2px] bg-[#F43F5E]/10 border border-[#F43F5E]/30 space-y-1.5">
-                    <p className="text-[10px] text-[#F43F5E] leading-relaxed">
-                      {desktopCaptureStatus?.captureCompatMode === 'dxgi'
-                        ? 'Khung hình vẫn bị đen dù đang bật chế độ tương thích Fullscreen. Hãy chuyển game sang Windowed Fullscreen, hoặc cài Overwolf để quay mượt.'
-                        : 'Video đang bị đen do game chạy Fullscreen. Thử chuyển sang chế độ tương thích để khắc phục ngay:'}
-                    </p>
-                    {desktopCaptureStatus?.captureCompatMode !== 'dxgi' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void handleUpdateCaptureOptions({ captureCompatMode: 'dxgi' })
-                        }
-                        className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
-                      >
-                        Bật chống đen Fullscreen &amp; Khởi động lại
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                <div className="pt-1 border-t border-[#232B3B]/60 flex items-center justify-between gap-1.5">
-                  <span className="text-[10px] text-[#64748B]">
-                    Overwolf:{' '}
-                    <b
-                      className={
-                        desktopCaptureStatus?.overwolfInstalled
-                          ? 'text-[#10B981]'
-                          : 'text-[#E59A23]'
-                      }
-                    >
-                      {desktopCaptureStatus?.overwolfInstalled ? 'Đã cài' : 'Chưa cài'}
-                    </b>
-                  </span>
-                  <div className="flex items-center gap-1">
-                    {!desktopCaptureStatus?.overwolfInstalled && (
-                      <button
-                        type="button"
-                        onClick={handleOpenOverwolfDownload}
-                        className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#38BDF8]/40 text-[10px] font-mono font-bold text-[#38BDF8]"
-                      >
-                        Tải Overwolf
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={checkingOverwolf}
-                      onClick={() => void handleCheckOverwolf()}
-                      className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[10px] font-mono text-[#94A3B8] disabled:opacity-50"
-                    >
-                      {checkingOverwolf ? '...' : 'Kiểm tra'}
-                    </button>
-                  </div>
-                </div>
-
-                <p className="text-[10px] text-[#64748B] leading-relaxed">
-                  Mặc định quay 720p30 giữ nguyên FPS tối đa cho Fullscreen (Win 10/11). Dùng nút Test quay để kiểm tra trực tiếp.
+            {blackFrameAlert && (
+              <div className="p-2 rounded-[2px] bg-[#F43F5E]/10 border border-[#F43F5E]/30 space-y-1.5">
+                <p className="text-[10px] text-[#F43F5E] leading-relaxed">
+                  {desktopCaptureStatus?.captureCompatMode === 'dxgi'
+                    ? tr(
+                        'Frames are still black in Exclusive Fullscreen. Switch the game to Borderless Windowed or install Overwolf.',
+                        'Khung hình vẫn bị đen khi Fullscreen độc quyền. Hãy chuyển game sang Windowed Fullscreen hoặc cài Overwolf.'
+                      )
+                    : tr(
+                        'Black frames detected in Fullscreen mode. Enable Fullscreen Compatibility to fix:',
+                        'Video đang bị đen do game chạy Fullscreen. Bật chế độ tương thích để khắc phục:'
+                      )}
                 </p>
+                {desktopCaptureStatus?.captureCompatMode !== 'dxgi' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleUpdateCaptureOptions({ captureCompatMode: 'dxgi' })
+                    }
+                    className="w-full py-1 px-2 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-[#0A0D12] font-mono text-[10px] font-bold transition duration-150"
+                  >
+                    {tr('Fix Fullscreen Black Frame & Restart', 'Bật chống đen Fullscreen & Khởi động lại')}
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          {!isValo && (
+          {/* NEW FEATURE: Recent 5-Match Session Form Tracker */}
+          {sessionForm && (
+            <div className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">
+                  <Flame
+                    size={12}
+                    weight="fill"
+                    className={isValo ? 'text-[#FF4655]' : 'text-[#E59A23]'}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {tr(
+                      `Last ${sessionForm.count} Session Form`,
+                      `Phong độ ${sessionForm.count} trận gần nhất`
+                    )}
+                  </span>
+                </span>
+                <div className="flex items-center gap-1" aria-hidden="true">
+                  {sessionForm.pills.map((ok, idx) => (
+                    <span
+                      key={idx}
+                      className={`h-2 w-2 rounded-[1px] ${
+                        ok ? 'bg-[#10B981]' : 'bg-[#334155]'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 font-mono text-[11px] tabular-nums">
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">
+                    {isValo ? tr('WIN RATE', 'TỶ LỆ THẮNG') : 'TOP 10'}
+                  </span>
+                  <span className="font-bold text-[#10B981]">{sessionForm.recentSuccessRate}%</span>
+                </div>
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">
+                    {tr('AVG KILLS', 'KILL TB')}
+                  </span>
+                  <span className="font-bold text-[#EEF2F6]">{sessionForm.recentAvgKills}</span>
+                </div>
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">
+                    {tr('TREND', 'XU HƯỚNG')}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-0.5 font-bold ${
+                      sessionForm.killsDelta > 0
+                        ? 'text-[#10B981]'
+                        : sessionForm.killsDelta < 0
+                          ? 'text-[#F43F5E]'
+                          : 'text-[#38BDF8]'
+                    }`}
+                  >
+                    {sessionForm.killsDelta > 0 ? (
+                      <TrendUp size={11} weight="bold" aria-hidden="true" />
+                    ) : sessionForm.killsDelta < 0 ? (
+                      <TrendDown size={11} weight="bold" aria-hidden="true" />
+                    ) : null}
+                    <span>
+                      {sessionForm.killsDelta > 0
+                        ? `+${sessionForm.killsDelta}K`
+                        : sessionForm.killsDelta < 0
+                          ? `${sessionForm.killsDelta}K`
+                          : tr('Steady', 'Ổn định')}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Account Sync / Setup Action */}
+          {!isValo && !profile?.pubg_player_name && (
             <form
               onSubmit={(e) => void handleSavePubgIgn(e)}
-              className="rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2.5 space-y-2"
+              className="rounded-[2px] border border-[#E59A23]/35 bg-[#0A0D12] p-2.5 space-y-2"
             >
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="pubg-ign-input"
-                  className="font-mono text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]"
-                >
-                  PUBG IGN
-                </label>
-                {profile?.pubg_account_id && (
-                  <span className="font-mono text-[10px] text-[#10B981]">ĐÃ XÁC MINH</span>
-                )}
-              </div>
+              <label
+                htmlFor="pubg-ign-sidebar-input"
+                className="block font-mono text-[10px] font-bold uppercase tracking-wider text-[#E59A23]"
+              >
+                {tr('Set Exact PUBG IGN to Sync Matches', 'Nhập đúng PUBG IGN để đồng bộ')}
+              </label>
               <div className="flex items-center gap-1.5">
                 <input
-                  id="pubg-ign-input"
+                  id="pubg-ign-sidebar-input"
                   type="text"
                   value={pubgIgnInput}
                   onChange={(e) => setPubgIgnInput(e.target.value)}
-                  placeholder={profile?.steam_persona_name || 'Nhập IGN PUBG chính xác...'}
+                  placeholder={
+                    profile?.steam_persona_name || tr('Enter PUBG IGN...', 'Nhập IGN PUBG...')
+                  }
                   className="flex-1 min-w-0 px-2.5 py-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#E59A23] text-xs font-mono text-[#EEF2F6] placeholder-[#64748B] focus:outline-none"
                 />
                 <button
                   type="submit"
                   disabled={savingPubgIgn}
-                  className="px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#E59A23]/40 text-xs font-bold text-[#E59A23] disabled:opacity-50 transition duration-150 shrink-0"
+                  className="px-2.5 py-1.5 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 text-xs font-bold text-[#0A0D12] disabled:opacity-50 transition duration-150 shrink-0"
                 >
-                  {savingPubgIgn ? 'Đang lưu...' : 'Lưu IGN'}
+                  {savingPubgIgn ? '...' : tr('Save', 'Lưu')}
                 </button>
               </div>
             </form>
@@ -1973,18 +2511,20 @@ const App: React.FC = () => {
               disabled={syncingPubg}
               className="w-full py-2 px-3 rounded-[2px] bg-[#E59A23] hover:bg-amber-400 disabled:opacity-50 text-[#0A0D12] font-bold text-xs transition duration-150 active:translate-y-[1px]"
             >
-              {syncingPubg ? 'Đang đồng bộ 20 trận PUBG...' : 'Đồng bộ 20 trận PUBG gần nhất'}
+              {syncingPubg
+                ? tr('Syncing 20 PUBG matches...', 'Đang đồng bộ 20 trận PUBG...')
+                : tr('Sync Latest 20 PUBG Matches', 'Đồng bộ 20 trận PUBG gần nhất')}
             </button>
           )}
 
-          {!isValo && !profile?.steam_id && (
+          {!isValo && !profile?.steam_id && !profile?.pubg_player_name && (
             <button
               type="button"
               onClick={() => void handleLinkSteamAccount()}
               className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-[2px] bg-[#1B2838] hover:bg-[#24364B] border border-[#38BDF8]/35 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
             >
               <LinkSimple size={14} weight="bold" aria-hidden="true" />
-              <span>Liên kết tài khoản Steam</span>
+              <span>{tr('Link Steam Account', 'Liên kết tài khoản Steam')}</span>
             </button>
           )}
 
@@ -1992,55 +2532,35 @@ const App: React.FC = () => {
             <button
               type="button"
               onClick={() => void handleLinkRiotAccount()}
-              className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
+              className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px] theme-cut-valo"
             >
               <LinkSimple size={14} weight="bold" aria-hidden="true" />
-              <span>Liên kết Riot Sign On (RSO)</span>
+              <span>{tr('Link Riot Sign On (RSO)', 'Liên kết Riot Sign On (RSO)')}</span>
             </button>
           )}
 
           {isValo && hasRiotLinked && (
-            <div className="space-y-1.5">
-              <button
-                type="button"
-                onClick={() => void handleSyncValorant()}
-                disabled={syncingValorant}
-                className="w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 disabled:opacity-50 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px]"
-              >
-                {syncingValorant
-                  ? 'Đang đồng bộ 20 trận VALORANT...'
-                  : 'Đồng bộ 20 trận VALORANT gần nhất'}
-              </button>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleRiotLogin(true)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-[11px] font-semibold text-[#EEF2F6] transition duration-150"
-                >
-                  <Swap size={13} weight="bold" aria-hidden="true" />
-                  <span>Đổi nick Riot</span>
-                </button>
-                {profile?.steam_id && (
-                  <button
-                    type="button"
-                    onClick={() => void handleUnlinkRiot()}
-                    disabled={unlinkingRiot}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-[2px] bg-[#171D28] hover:bg-[#F43F5E]/15 border border-[#232B3B] hover:border-[#F43F5E]/40 text-[11px] font-semibold text-[#F43F5E] disabled:opacity-50 transition duration-150"
-                  >
-                    <LinkBreak size={13} weight="bold" aria-hidden="true" />
-                    <span>{unlinkingRiot ? 'Đang gỡ...' : 'Hủy liên kết'}</span>
-                  </button>
-                )}
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => void handleSyncValorant()}
+              disabled={syncingValorant}
+              className="w-full py-2 px-3 rounded-[2px] bg-[#FF4655] hover:bg-rose-500 disabled:opacity-50 text-[#EEF2F6] font-bold text-xs transition duration-150 active:translate-y-[1px] theme-cut-valo"
+            >
+              {syncingValorant
+                ? tr('Syncing 20 VALORANT matches...', 'Đang đồng bộ 20 trận VALORANT...')
+                : tr('Sync Latest 20 VALORANT Matches', 'Đồng bộ 20 trận VALORANT gần nhất')}
+            </button>
           )}
 
+          {/* Match Search + Tag / Clip / Pin Filters */}
           {tabBaseVideos.length > 0 && !loading && (
             <div className="space-y-1.5 rounded-[2px] border border-[#232B3B] bg-[#0A0D12] p-2">
               <div className="relative">
                 <label htmlFor="match-search-input" className="sr-only">
-                  Tìm kiếm trận đấu theo map hoặc kết quả
+                  {tr(
+                    'Search matches by map, result, #tag, or personal note',
+                    'Tìm kiếm trận đấu theo map, kết quả, #nhãn hoặc ghi chú'
+                  )}
                 </label>
                 <MagnifyingGlass
                   size={12}
@@ -2053,24 +2573,25 @@ const App: React.FC = () => {
                   type="text"
                   value={matchSearchText}
                   onChange={(e) => setMatchSearchText(e.target.value)}
-                  placeholder="Tìm map, mode, top..."
+                  placeholder={tr('Map, #tag, note, result...', 'Tìm map, #nhãn, ghi chú...')}
                   className="w-full pl-6 pr-2 py-1 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#38BDF8] text-[11px] font-mono text-[#EEF2F6] placeholder-[#64748B] focus:outline-none"
                 />
               </div>
-              <div className="grid grid-cols-4 gap-1">
+              <div className="grid grid-cols-5 gap-1">
                 {(
                   [
-                    { id: 'ALL', label: 'Tất cả' },
-                    { id: 'WINS', label: 'Thắng/#1' },
-                    { id: 'CLIPS', label: 'Có Clip' },
-                    { id: 'PINNED', label: 'Đã ghim' },
+                    { id: 'ALL', label: tr('All', 'Tất cả') },
+                    { id: 'WINS', label: tr('Win/#1', 'Thắng') },
+                    { id: 'CLIPS', label: tr('Clips', 'Clip') },
+                    { id: 'PINNED', label: tr('Pinned', 'Ghim') },
+                    { id: 'NOTES', label: tr('Notes', 'Nhãn') },
                   ] as const
                 ).map((tab) => (
                   <button
                     key={tab.id}
                     type="button"
                     onClick={() => setMatchFilterMode(tab.id)}
-                    className={`py-1 px-1 rounded-[2px] font-mono text-[10px] font-bold transition duration-150 ${
+                    className={`py-1 px-1 rounded-[2px] font-mono text-[10px] font-bold transition duration-150 truncate ${
                       matchFilterMode === tab.id
                         ? isValo
                           ? 'bg-[#FF4655] text-[#EEF2F6]'
@@ -2086,7 +2607,10 @@ const App: React.FC = () => {
           )}
 
           {loading ? (
-            <div className="space-y-2 py-1" aria-label="Đang tải danh sách trận đấu">
+            <div
+              className="space-y-2 py-1"
+              aria-label={tr('Loading matches', 'Đang tải danh sách trận đấu')}
+            >
               {[1, 2, 3, 4, 5].map((item) => (
                 <div
                   key={item}
@@ -2098,19 +2622,25 @@ const App: React.FC = () => {
             <div className="rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] p-4 text-xs text-[#94A3B8] space-y-2 leading-relaxed">
               <p className="font-bold text-[#EEF2F6]">
                 {isValo
-                  ? 'Chưa có trận VALORANT nào được ghi nhận.'
-                  : 'Chưa có trận PUBG nào được lưu.'}
+                  ? tr('No VALORANT matches synced yet.', 'Chưa có trận VALORANT nào được ghi nhận.')
+                  : tr('No PUBG matches saved yet.', 'Chưa có trận PUBG nào được lưu.')}
               </p>
               <p className="text-[#64748B]">
                 {isValo
-                  ? 'Mở VALORANT qua Overwolf để tự động quay highlight hoặc bấm đồng bộ lịch sử trận đấu phía trên.'
-                  : 'Bấm nút đồng bộ 20 trận PUBG hoặc chơi qua Overwolf để tự động lưu replay và phân tích.'}
+                  ? tr(
+                      'Link Riot Sign On (RSO) and sync your latest 20 matches, or launch VALORANT to auto-record highlights.',
+                      'Liên kết Riot Sign On để đồng bộ 20 trận gần nhất hoặc vào VALORANT để tự động quay highlight.'
+                    )
+                  : tr(
+                      'Click Sync Latest 20 PUBG Matches above, or launch PUBG to automatically capture highlights and zone telemetry.',
+                      'Bấm nút đồng bộ 20 trận PUBG phía trên hoặc vào PUBG để tự động lưu highlight và phân tích vòng bo.'
+                    )}
               </p>
             </div>
           ) : filteredVideos.length === 0 ? (
             <div className="rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] p-4 text-xs text-[#94A3B8] space-y-2">
               <p className="font-bold text-[#EEF2F6]">
-                Không có trận nào khớp bộ lọc hiện tại.
+                {tr('No matches match the current filter.', 'Không có trận nào khớp bộ lọc hiện tại.')}
               </p>
               <button
                 type="button"
@@ -2120,16 +2650,17 @@ const App: React.FC = () => {
                 }}
                 className="px-2.5 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[11px] font-bold text-[#38BDF8]"
               >
-                Xóa bộ lọc
+                {tr('Reset Filters', 'Xóa bộ lọc')}
               </button>
             </div>
           ) : (
-            <div className="space-y-2 overflow-y-auto max-h-[75vh] tactical-scrollbar pr-1">
+            <div className="space-y-2 overflow-y-auto max-h-[68vh] tactical-scrollbar pr-1">
               {filteredVideos.map((v) => {
                 const isSelected = v.match_id === selectedMatchId;
                 const localRecord = getLocalVideoByMatchId(v.match_id);
                 const clipCount = localRecord?.clips?.length || (localRecord?.filePath ? 1 : 0);
                 const hasHighlight = Boolean(v.cloud_video_url || localRecord);
+                const ann = annotationsMap[v.match_id];
 
                 return (
                   <div
@@ -2163,17 +2694,17 @@ const App: React.FC = () => {
                           {hasHighlight && (
                             <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-[2px] bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30">
                               <VideoCamera size={10} weight="bold" aria-hidden="true" />
-                              <span>{clipCount > 1 ? `${clipCount} CLIP` : 'CLIP'}</span>
+                              <span>{clipCount > 1 ? `${clipCount} CLIPS` : 'CLIP'}</span>
                             </span>
                           )}
                           {v.is_pinned && (
                             <span className="font-mono text-[10px] font-bold px-1 py-0.5 rounded-[2px] bg-[#E59A23]/15 text-[#E59A23] border border-[#E59A23]/40">
-                              GHIM
+                              {tr('PIN', 'GHIM')}
                             </span>
                           )}
                         </div>
                         <span className="font-mono text-[11px] text-[#64748B] tabular-nums shrink-0">
-                          {new Date(v.played_at).toLocaleDateString('vi-VN')}
+                          {new Date(v.played_at).toLocaleDateString(localeCode)}
                         </span>
                       </div>
                       <p className="font-display text-sm font-bold text-[#EEF2F6] truncate">
@@ -2182,18 +2713,50 @@ const App: React.FC = () => {
                       <p className="font-mono text-[11px] text-[#94A3B8] tabular-nums">
                         {v.match_result} {v.score_summary ? `- ${v.score_summary}` : ''}
                       </p>
+
+                      {ann && (ann.tags.length > 0 || ann.note.trim().length > 0) && (
+                        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                          {ann.tags.slice(0, 2).map((tag) => (
+                            <span
+                              key={tag}
+                              className="px-1.5 py-0.5 rounded-[2px] bg-[#38BDF8]/10 border border-[#38BDF8]/30 font-mono text-[9px] font-bold text-[#38BDF8]"
+                            >
+                              #{tag}
+                            </span>
+                          ))}
+                          {ann.tags.length > 2 && (
+                            <span className="font-mono text-[9px] text-[#64748B]">
+                              +{ann.tags.length - 2}
+                            </span>
+                          )}
+                          {ann.note.trim().length > 0 && (
+                            <span
+                              title={ann.note}
+                              className="inline-flex items-center gap-0.5 font-mono text-[9px] text-[#94A3B8]"
+                            >
+                              <NotePencil size={10} weight="bold" aria-hidden="true" />
+                              <span>{tr('Note', 'Ghi chú')}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </button>
 
                     <button
                       type="button"
                       onClick={() => void handleTogglePinMatch(v)}
                       aria-label={
-                        v.is_pinned ? `Bỏ ghim trận ${v.map_name}` : `Ghim trận ${v.map_name}`
+                        v.is_pinned
+                          ? tr(`Unpin match on ${v.map_name}`, `Bỏ ghim trận ${v.map_name}`)
+                          : tr(`Pin match on ${v.map_name}`, `Ghim trận ${v.map_name}`)
                       }
                       title={
                         v.is_pinned
-                          ? 'Bỏ ghim trận này'
-                          : 'Ghim trận (giữ lại vĩnh viễn không bị xóa khi đầy 20 trận)'
+                          ? tr('Unpin this match', 'Bỏ ghim trận này')
+                          : tr(
+                              'Pin match (protects clips from 20-match auto-cleanup)',
+                              'Ghim trận (giữ lại không bị xóa khi đầy 20 trận)'
+                            )
                       }
                       className={`px-2 border-l border-[#232B3B]/70 flex items-center justify-center transition duration-150 ${
                         v.is_pinned
@@ -2214,8 +2777,11 @@ const App: React.FC = () => {
           )}
         </aside>
 
-        {/* Cot giua: Replay Theater & Round Matrix */}
-        <section aria-label="Trình phát replay và diễn biến round" className="lg:col-span-6">
+        {/* Center Column: Replay Theater & Round Matrix */}
+        <section
+          aria-label={tr('Replay Theater and Round Timeline', 'Trình phát replay và diễn biến round')}
+          className="lg:col-span-6"
+        >
           <ReplayPlayer
             gameType={activeGameTab}
             matchId={activeMatch?.match_id || null}
@@ -2229,9 +2795,12 @@ const App: React.FC = () => {
             selectedRound={selectedRound}
             onSelectRound={setSelectedRound}
             onOpenHighlightsFolder={isElectronRuntime ? handleOpenHighlightsFolder : undefined}
+            dataRevision={dataRevision}
             onHighlightSaved={(cloudUrl) => {
               setVideoSrc(cloudUrl);
-              setStatusMsg('Đã lưu video highlight lên hệ thống.');
+              setStatusMsg(
+                tr('Uploaded highlight video to cloud.', 'Đã lưu video highlight lên hệ thống.')
+              );
               setVideos((prev) =>
                 prev.map((item) =>
                   item.match_id === activeMatch?.match_id
@@ -2243,8 +2812,11 @@ const App: React.FC = () => {
           />
         </section>
 
-        {/* Cot phai: Tactical Report & AI Coach */}
-        <aside aria-label="Báo cáo chiến thuật" className="lg:col-span-3">
+        {/* Right Column: Tactical Report, Personal Notes & AI Coach */}
+        <aside
+          aria-label={tr('Tactical Report', 'Báo cáo chiến thuật')}
+          className="lg:col-span-3"
+        >
           <TacticalReport
             gameType={activeGameTab}
             matchId={activeMatch?.match_id || null}
@@ -2253,23 +2825,22 @@ const App: React.FC = () => {
             report={report}
             rounds={rounds}
             mapTelemetry={mapTelemetry}
+            dataRevision={dataRevision}
+            onAnnotationChange={() => setDataRevision((r) => r + 1)}
           />
         </aside>
       </main>
 
-      <AppFooterVersion isElectronRuntime={isElectronRuntime} />
+      <AppFooterVersion
+        isElectronRuntime={isElectronRuntime}
+        onOpenSettings={() => openSettingsAt('GENERAL')}
+      />
 
       <FriendsLeaderboard
         isOpen={showLeaderboard}
         initialGame={activeGameTab}
         currentUserId={profile?.id}
         onClose={() => setShowLeaderboard(false)}
-      />
-
-      <SettingsVaultModal
-        isOpen={showSettingsVault}
-        initialGame={activeGameTab}
-        onClose={() => setShowSettingsVault(false)}
       />
 
       <MatchTrendModal
@@ -2279,14 +2850,7 @@ const App: React.FC = () => {
         onClose={() => setShowTrendModal(false)}
       />
 
-      <StorageManagerModal
-        isOpen={showStorageModal}
-        isElectronRuntime={isElectronRuntime}
-        captureStatus={desktopCaptureStatus}
-        pinnedMatchIds={videos.filter((v) => v.is_pinned).map((v) => v.match_id)}
-        onUpdateOptions={handleUpdateCaptureOptions}
-        onClose={() => setShowStorageModal(false)}
-      />
+      {sharedSettingsModal}
 
       <PostMatchRecapToast
         isOpen={showPostMatchRecap}
@@ -2300,6 +2864,36 @@ const App: React.FC = () => {
 
       <UpdateBanner />
     </div>
+  );
+};
+
+const App: React.FC = () => {
+  const [appSettings, setAppSettings] = useState<AppUserSettings>(() => loadAppSettings());
+
+  useEffect(() => {
+    document.documentElement.lang = appSettings.language;
+  }, [appSettings.language]);
+
+  const handleUpdateAppSettings = useCallback((patch: Partial<AppUserSettings>) => {
+    setAppSettings((prev) => saveAppSettings({ ...prev, ...patch }));
+  }, []);
+
+  const handleReplaceAppSettings = useCallback((full: AppUserSettings) => {
+    setAppSettings(saveAppSettings(full));
+  }, []);
+
+  const handleChangeLang = useCallback((nextLang: AppLanguage) => {
+    setAppSettings((prev) => saveAppSettings({ ...prev, language: nextLang }));
+  }, []);
+
+  return (
+    <I18nProvider lang={appSettings.language} onChangeLang={handleChangeLang}>
+      <AppContent
+        appSettings={appSettings}
+        onUpdateAppSettings={handleUpdateAppSettings}
+        onReplaceAppSettings={handleReplaceAppSettings}
+      />
+    </I18nProvider>
   );
 };
 

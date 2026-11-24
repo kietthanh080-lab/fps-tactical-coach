@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ChartBar, Crosshair, MapPin, TrendUp, X } from '@phosphor-icons/react';
+import { useI18n } from '../i18n';
 
 export interface TrendMatchInput {
   match_id: string;
@@ -34,6 +35,7 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
   matches,
   onClose,
 }) => {
+  const { tr } = useI18n();
   const reduceMotion = useReducedMotion();
   const isValo = gameType === 'VALORANT';
 
@@ -128,7 +130,7 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
                 <div
                   className={`h-8 w-8 rounded-[2px] flex items-center justify-center border ${
                     isValo
-                      ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655]'
+                      ? 'bg-[#FF4655]/15 border-[#FF4655]/40 text-[#FF4655] theme-cut-valo'
                       : 'bg-[#E59A23]/15 border-[#E59A23]/40 text-[#E59A23]'
                   }`}
                 >
@@ -139,10 +141,16 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
                     id="trend-modal-title"
                     className="font-display text-base font-bold text-[#EEF2F6]"
                   >
-                    Biểu đồ phong độ 20 trận {gameType} gần nhất
+                    {tr(
+                      `Last 20 ${gameType} Matches Performance`,
+                      `Biểu đồ phong độ 20 trận ${gameType} gần nhất`
+                    )}
                   </h2>
                   <p className="text-xs text-[#94A3B8]">
-                    Tổng hợp tỷ lệ thắng, số mạng hạ gục và hiệu suất theo bản đồ
+                    {tr(
+                      'Win/Top-10 rate, average eliminations, and map-by-map breakdown',
+                      'Tổng hợp tỷ lệ thắng, số mạng hạ gục và hiệu suất theo bản đồ'
+                    )}
                   </p>
                 </div>
               </div>
@@ -150,60 +158,76 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                aria-label="Đóng biểu đồ phong độ"
+                aria-label={tr('Close performance trend modal', 'Đóng biểu đồ phong độ')}
                 className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 text-xs font-semibold text-[#94A3B8] hover:text-[#EEF2F6]"
               >
                 <X size={14} weight="bold" aria-hidden="true" />
-                <span>Đóng</span>
+                <span>{tr('Close', 'Đóng')}</span>
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto tactical-scrollbar p-6 space-y-5">
               {stats.total === 0 ? (
                 <div className="rounded-[2px] border border-dashed border-[#232B3B] p-8 text-center text-xs text-[#64748B]">
-                  Chưa có trận {gameType} nào để thống kê phong độ.
+                  {tr(
+                    `No ${gameType} matches synced yet for trend analysis.`,
+                    `Chưa có trận ${gameType} nào để thống kê phong độ.`
+                  )}
                 </div>
               ) : (
                 <>
-                  {/* KPI Strip */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
-                      <span className="font-mono text-[10px] text-[#64748B] block">SỐ TRẬN</span>
+                      <span className="font-mono text-[10px] text-[#64748B] block">
+                        {tr('MATCHES', 'SỐ TRẬN')}
+                      </span>
                       <span className="font-mono text-xl font-bold text-[#EEF2F6] tabular-nums">
                         {stats.total}/20
                       </span>
                     </div>
                     <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
                       <span className="font-mono text-[10px] text-[#64748B] block">
-                        {isValo ? 'TỶ LỆ THẮNG' : 'TỶ LỆ TOP 10'}
+                        {isValo
+                          ? tr('WIN RATE', 'TỶ LỆ THẮNG')
+                          : tr('TOP 10 RATE', 'TỶ LỆ TOP 10')}
                       </span>
                       <span className="font-mono text-xl font-bold text-[#10B981] tabular-nums">
                         {stats.winRatePct}%
                       </span>
                     </div>
                     <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
-                      <span className="font-mono text-[10px] text-[#64748B] block">KILLS TRUNG BÌNH</span>
+                      <span className="font-mono text-[10px] text-[#64748B] block">
+                        {tr('AVG KILLS', 'KILLS TRUNG BÌNH')}
+                      </span>
                       <span className="font-mono text-xl font-bold text-[#E59A23] tabular-nums">
                         {stats.avgKills}
                       </span>
                     </div>
                     <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
-                      <span className="font-mono text-[10px] text-[#64748B] block">SỐ TRẬN ĐẠT MỤC TIÊU</span>
+                      <span className="font-mono text-[10px] text-[#64748B] block">
+                        {isValo ? tr('VICTORIES', 'TRẬN THẮNG') : tr('TOP 10 FINISHES', 'ĐẠT TOP 10')}
+                      </span>
                       <span className="font-mono text-xl font-bold text-[#38BDF8] tabular-nums">
                         {stats.positiveCount}
                       </span>
                     </div>
                   </div>
 
-                  {/* Bar Chart: Kills per match */}
                   <div className="p-4 rounded-[4px] bg-[#0A0D12] border border-[#232B3B] space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] flex items-center gap-1.5">
                         <ChartBar size={14} weight="bold" aria-hidden="true" />
-                        <span>Biểu đồ số Kill từng trận (cũ nhất đến mới nhất)</span>
+                        <span>
+                          {tr(
+                            'Kills per Match (Oldest to Latest)',
+                            'Biểu đồ số Kill từng trận (cũ nhất đến mới nhất)'
+                          )}
+                        </span>
                       </h3>
                       <span className="font-mono text-[11px] text-[#64748B]">
-                        Xanh: {isValo ? 'Thắng' : 'Top 10'} / Đỏ: {isValo ? 'Thua' : 'Ngoài Top 10'}
+                        {isValo
+                          ? tr('Green: Win / Red: Loss', 'Xanh: Thắng / Đỏ: Thua')
+                          : tr('Green: Top 10 / Red: Outside Top 10', 'Xanh: Top 10 / Đỏ: Ngoài Top 10')}
                       </span>
                     </div>
 
@@ -231,11 +255,10 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
                     </div>
                   </div>
 
-                  {/* Map Breakdown */}
                   <div className="space-y-2.5">
                     <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-[#94A3B8] flex items-center gap-1.5">
                       <MapPin size={14} weight="bold" aria-hidden="true" />
-                      <span>Hiệu suất theo bản đồ</span>
+                      <span>{tr('Performance by Map', 'Hiệu suất theo bản đồ')}</span>
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       {stats.mapBreakdown.map((m) => (
@@ -248,14 +271,16 @@ export const MatchTrendModal: React.FC<MatchTrendModalProps> = ({
                               {m.mapName}
                             </p>
                             <p className="font-mono text-[11px] text-[#64748B] tabular-nums">
-                              {m.total} trận
+                              {m.total} {tr('match(es)', 'trận')}
                             </p>
                           </div>
                           <div className="text-right font-mono text-xs tabular-nums">
                             <p className="font-bold text-[#10B981]">{m.winRate}% Win</p>
                             <p className="text-[#E59A23] inline-flex items-center gap-1 justify-end">
                               <Crosshair size={11} weight="bold" aria-hidden="true" />
-                              <span>{m.avgKills} K/trận</span>
+                              <span>
+                                {m.avgKills} {tr('K/match', 'K/trận')}
+                              </span>
                             </p>
                           </div>
                         </div>

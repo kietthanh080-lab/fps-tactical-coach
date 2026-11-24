@@ -11,6 +11,33 @@
 @tailwind components;
 @tailwind utilities;
 
+:root,
+[data-game-theme='pubg'] {
+  --theme-accent: #E59A23;
+  --theme-accent-fg: #0A0D12;
+  --theme-accent-soft: rgba(229, 154, 35, 0.14);
+  --theme-accent-border: rgba(229, 154, 35, 0.45);
+  --theme-secondary: #10B981;
+  --theme-substrate: #0B0E12;
+  --theme-surface: #11161E;
+  --theme-grid-line: rgba(229, 154, 35, 0.055);
+  --theme-glow-primary: rgba(229, 154, 35, 0.12);
+  --theme-glow-secondary: rgba(16, 185, 129, 0.06);
+}
+
+[data-game-theme='valorant'] {
+  --theme-accent: #FF4655;
+  --theme-accent-fg: #EEF2F6;
+  --theme-accent-soft: rgba(255, 70, 85, 0.14);
+  --theme-accent-border: rgba(255, 70, 85, 0.45);
+  --theme-secondary: #38BDF8;
+  --theme-substrate: #090C12;
+  --theme-surface: #10141E;
+  --theme-grid-line: rgba(255, 70, 85, 0.05);
+  --theme-glow-primary: rgba(255, 70, 85, 0.13);
+  --theme-glow-secondary: rgba(56, 189, 248, 0.07);
+}
+
 @layer base {
   html {
     scroll-behavior: smooth;
@@ -31,6 +58,39 @@
   background-size: 40px 40px;
 }
 
+.game-theme-backdrop {
+  background-color: var(--theme-substrate);
+  transition: background-color 280ms ease;
+}
+
+.game-theme-backdrop.theme-fx-on[data-game-theme='valorant'] {
+  background-image:
+    radial-gradient(640px circle at 8% 0%, var(--theme-glow-primary), transparent 65%),
+    radial-gradient(520px circle at 92% 4%, var(--theme-glow-secondary), transparent 65%),
+    linear-gradient(135deg, rgba(255, 70, 85, 0.028) 25%, transparent 25%, transparent 50%, rgba(255, 70, 85, 0.028) 50%, rgba(255, 70, 85, 0.028) 75%, transparent 75%, transparent),
+    linear-gradient(to right, var(--theme-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--theme-grid-line) 1px, transparent 1px);
+  background-size: auto, auto, 56px 56px, 36px 36px, 36px 36px;
+}
+
+.game-theme-backdrop.theme-fx-on[data-game-theme='pubg'] {
+  background-image:
+    radial-gradient(640px circle at 8% 0%, var(--theme-glow-primary), transparent 65%),
+    radial-gradient(520px circle at 92% 4%, var(--theme-glow-secondary), transparent 65%),
+    linear-gradient(to right, var(--theme-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--theme-grid-line) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
+}
+
+.theme-cut-valo {
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
+}
+
+.theme-surface-card {
+  background-color: var(--theme-surface);
+  transition: border-color 220ms ease, background-color 220ms ease;
+}
+
 .tactical-scrollbar::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -46,7 +106,7 @@
 }
 
 .tactical-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--theme-accent);
 }
 
 .tabular-nums {

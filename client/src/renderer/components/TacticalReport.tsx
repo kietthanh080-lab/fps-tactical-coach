@@ -2,14 +2,25 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle,
   Crosshair,
+  FloppyDisk,
   ListChecks,
+  NotePencil,
   PaperPlaneRight,
   Robot,
   ShieldWarning,
+  Tag,
   Target,
 } from '@phosphor-icons/react';
-import { AnalyzedRoundUI, WeaponUsageStatUI } from './RoundTimeline';
+import { useI18n } from '../i18n';
+import {
+  getMatchAnnotation,
+  PRESET_MATCH_TAGS,
+  saveMatchAnnotation,
+} from '../services/appSettings';
+import type { PubgMapTelemetrySummary } from '../services/localDb';
 import { askAiCoach } from '../services/localDb';
+import { PubgMinimapPanel } from './PubgMinimapPanel';
+import { AnalyzedRoundUI, WeaponUsageStatUI } from './RoundTimeline';
 
 export interface MatchReportUI {
   overallScore: number;
@@ -19,9 +30,6 @@ export interface MatchReportUI {
   coachCommentary: string;
 }
 
-import type { PubgMapTelemetrySummary } from '../services/localDb';
-import { PubgMinimapPanel } from './PubgMinimapPanel';
-
 interface TacticalReportProps {
   gameType: 'VALORANT' | 'PUBG';
   matchId?: string | null;
@@ -30,6 +38,8 @@ interface TacticalReportProps {
   rounds?: AnalyzedRoundUI[];
   report: MatchReportUI | null;
   mapTelemetry?: PubgMapTelemetrySummary | null;
+  dataRevision?: number;
+  onAnnotationChange?: () => void;
 }
 
 interface ChatMessage {
@@ -50,7 +60,20 @@ const CATEGORY_BADGE_STYLES: Record<WeaponUsageStatUI['category'], string> = {
   Other: 'bg-[#171D28] text-[#94A3B8] border-[#334155]',
 };
 
-const QUICK_PROMPTS: Record<'VALORANT' | 'PUBG', string[]> = {
+const QUICK_PROMPTS_EN: Record<'VALORANT' | 'PUBG', string[]> = {
+  VALORANT: [
+    'Why did we lose our Force Buy rounds?',
+    'Analyze positioning mistakes in the selected round',
+    'Evaluate weapon choice and headshot efficiency this match',
+  ],
+  PUBG: [
+    'How could I rotate into the late zone more safely?',
+    'Break down the phase where I got eliminated',
+    'Evaluate my weapon loadout and damage output this match',
+  ],
+};
+
+const QUICK_PROMPTS_VI: Record<'VALORANT' | 'PUBG', string[]> = {
   VALORANT: [
     'Tại sao mình hay thua các round Force Buy?',
     'Phân tích lỗi vị trí ở Round đang chọn',
@@ -71,13 +94,20 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   rounds = [],
   report,
   mapTelemetry = null,
+  dataRevision = 0,
+  onAnnotationChange,
 }) => {
+  const { isEn, tr, ts } = useI18n();
   const [activeTab, setActiveTab] = useState<'ROUND' | 'MATCH' | 'CHAT'>('ROUND');
   const [showRoundMinimap, setShowRoundMinimap] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [questionInput, setQuestionInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const [matchTags, setMatchTags] = useState<string[]>([]);
+  const [matchNote, setMatchNote] = useState('');
+  const [noteSavedFlash, setNoteSavedFlash] = useState(false);
 
   const isValo = gameType === 'VALORANT';
 
@@ -91,10 +121,34 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   }, [matchId]);
 
   useEffect(() => {
+    const ann = getMatchAnnotation(matchId);
+    setMatchTags(ann.tags);
+    setMatchNote(ann.note);
+    setNoteSavedFlash(false);
+  }, [matchId, dataRevision]);
+
+  useEffect(() => {
     if (activeTab === 'CHAT') {
       chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, activeTab]);
+
+  const handleToggleTag = (tag: string) => {
+    if (!matchId) return;
+    const exists = matchTags.includes(tag);
+    const nextTags = exists ? matchTags.filter((t) => t !== tag) : [...matchTags, tag];
+    setMatchTags(nextTags);
+    saveMatchAnnotation(matchId, { tags: nextTags, note: matchNote });
+    onAnnotationChange?.();
+  };
+
+  const handleSaveNote = () => {
+    if (!matchId) return;
+    saveMatchAnnotation(matchId, { tags: matchTags, note: matchNote });
+    onAnnotationChange?.();
+    setNoteSavedFlash(true);
+    window.setTimeout(() => setNoteSavedFlash(false), 1800);
+  };
 
   const matchWeaponSummary = useMemo(() => {
     const aggMap = new Map<string, WeaponUsageStatUI>();
@@ -136,11 +190,15 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
     setSendingChat(true);
 
     try {
+      const apiQuestion = isEn
+        ? `${trimmed} (Please respond concisely in English based on the match telemetry.)`
+        : trimmed;
+
       const data = await askAiCoach({
         matchId,
         gameType,
         mapName,
-        question: trimmed,
+        question: apiQuestion,
         activeRound,
         rounds,
         report,
@@ -150,7 +208,10 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         })),
       });
 
-      const replyText = data.reply || 'Không thể kết nối tới AI Coach lúc này.';
+      const rawReply =
+        data.reply ||
+        tr('Unable to reach AI Coach right now.', 'Không thể kết nối tới AI Coach lúc này.');
+      const replyText = isEn ? ts(rawReply) : rawReply;
 
       setMessages((prev) => [
         ...prev,
@@ -167,7 +228,11 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
           id: `e-${Date.now()}`,
           role: 'assistant',
           content:
-            err?.message || 'Lỗi kết nối mạng tới máy chủ AI Coach. Vui lòng thử lại.',
+            err?.message ||
+            tr(
+              'Network error connecting to AI Coach server. Please try again.',
+              'Lỗi kết nối mạng tới máy chủ AI Coach. Vui lòng thử lại.'
+            ),
         },
       ]);
     } finally {
@@ -177,16 +242,17 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
 
   const roundWeapons = activeRound?.weaponStats || [];
   const maxRoundWeaponDmg = Math.max(1, ...roundWeapons.map((w) => w.damageDealt));
+  const quickPrompts = isEn ? QUICK_PROMPTS_EN[gameType] : QUICK_PROMPTS_VI[gameType];
 
   return (
     <section
-      aria-label="Bao cao chien thuat va AI Coach"
-      className="bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-4 h-full"
+      aria-label={tr('Tactical Report and AI Coach', 'Báo cáo chiến thuật và AI Coach')}
+      className="theme-surface-card bg-[#10141C] border border-[#232B3B] rounded-[4px] p-4 flex flex-col gap-4 h-full"
     >
       {/* Tab Switcher */}
       <div
         role="tablist"
-        aria-label="Che do phan tich"
+        aria-label={tr('Analysis view mode', 'Chế độ phân tích')}
         className="grid grid-cols-3 gap-1 p-1 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]"
       >
         <button
@@ -202,7 +268,10 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         >
           {isValo
             ? `Round ${activeRound ? `#${activeRound.roundNumber}` : ''}`
-            : `Bo ${activeRound ? `P${activeRound.roundNumber}` : ''}`}
+            : tr(
+                `Phase ${activeRound ? `#${activeRound.roundNumber}` : ''}`,
+                `Bo ${activeRound ? `P${activeRound.roundNumber}` : ''}`
+              )}
         </button>
         <button
           type="button"
@@ -215,7 +284,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               : 'text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#171D28]'
           }`}
         >
-          Tổng kết
+          {tr('Overview', 'Tổng kết')}
         </button>
         <button
           type="button"
@@ -233,7 +302,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </button>
       </div>
 
-      {/* TAB 1: CHI TIET ROUND / PHASE */}
+      {/* TAB 1: ROUND / PHASE TELEMETRY */}
       {activeTab === 'ROUND' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
           {!activeRound ? (
@@ -241,8 +310,14 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               <Target size={24} className="mx-auto text-[#64748B]" aria-hidden="true" />
               <p className="text-[#94A3B8] text-xs leading-relaxed">
                 {isValo
-                  ? 'Chọn một trận đấu và round tương ứng để xem phân tích vũ khí, kinh tế và lỗi vị trí.'
-                  : 'Chọn một trận đấu và giai đoạn vòng bo để xem chi tiết vũ khí sử dụng và diễn biến giao tranh.'}
+                  ? tr(
+                      'Select a match and round to view weapon accuracy, economy, and positioning review.',
+                      'Chọn một trận đấu và round tương ứng để xem phân tích vũ khí, kinh tế và lỗi vị trí.'
+                    )
+                  : tr(
+                      'Select a match and safe-zone phase to inspect weapon damage and combat breakdown.',
+                      'Chọn một trận đấu và giai đoạn vòng bo để xem chi tiết vũ khí sử dụng và diễn biến giao tranh.'
+                    )}
               </p>
             </div>
           ) : (
@@ -252,10 +327,17 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   <h2 className="font-display font-bold text-lg text-[#EEF2F6] leading-tight">
                     {isValo
                       ? `Round ${String(activeRound.roundNumber).padStart(2, '0')}`
-                      : `Vòng bo Phase ${activeRound.roundNumber}`}
+                      : tr(
+                          `Zone Phase ${activeRound.roundNumber}`,
+                          `Vòng bo Phase ${activeRound.roundNumber}`
+                        )}
                   </h2>
                   <p className="font-mono text-xs text-[#94A3B8] mt-1 tabular-nums">
-                    K/D/A: <span className="text-[#EEF2F6] font-bold">{activeRound.kills}/{activeRound.deaths}/{activeRound.assists}</span> - DMG:{' '}
+                    K/D/A:{' '}
+                    <span className="text-[#EEF2F6] font-bold">
+                      {activeRound.kills}/{activeRound.deaths}/{activeRound.assists}
+                    </span>{' '}
+                    - DMG:{' '}
                     <span className="text-[#E59A23] font-bold">{activeRound.damageDealt}</span>
                   </p>
                 </div>
@@ -270,17 +352,41 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 </span>
               </div>
 
+              {matchId && (
+                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#94A3B8] truncate">
+                    <Tag size={12} weight="bold" className="text-[#38BDF8] shrink-0" aria-hidden="true" />
+                    <span className="truncate">
+                      {matchTags.length > 0
+                        ? matchTags.join(', ')
+                        : matchNote.trim()
+                          ? tr('Personal note attached', 'Đã có ghi chú cá nhân')
+                          : tr('No personal tags yet', 'Chưa gắn nhãn cá nhân')}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('MATCH')}
+                    className="font-mono text-[10px] font-bold text-[#38BDF8] hover:underline shrink-0"
+                  >
+                    {tr('Notes & Tags', 'Ghi chú & Nhãn')}
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
                 <div className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
                   <span className="block text-[10px] text-[#64748B]">
-                    {isValo ? 'KINH TẾ' : 'GIAI ĐOẠN'}
+                    {isValo ? tr('ECONOMY', 'KINH TẾ') : tr('STAGE', 'GIAI ĐOẠN')}
                   </span>
                   <span className="text-[#38BDF8] font-bold truncate block mt-0.5">
                     {activeRound.economyType}
                   </span>
                 </div>
                 <div className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
-                  <span className="block text-[10px] text-[#64748B]">LỐI ĐÁNH</span>
+                  <span className="block text-[10px] text-[#64748B]">
+                    {tr('PLAYSTYLE', 'LỐI ĐÁNH')}
+                  </span>
                   <span className="text-[#EEF2F6] font-bold truncate block mt-0.5">
                     {activeRound.tacticalStyle}
                   </span>
@@ -292,20 +398,25 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   <Crosshair size={13} weight="bold" aria-hidden="true" />
                   <span>
                     {isValo
-                      ? 'Vũ khí trang bị trong Round'
-                      : `Vũ khí sử dụng ở Phase ${activeRound.roundNumber}`}
+                      ? tr('Round Weapon Telemetry', 'Vũ khí trang bị trong Round')
+                      : tr(
+                          `Weapons Used in Phase ${activeRound.roundNumber}`,
+                          `Vũ khí sử dụng ở Phase ${activeRound.roundNumber}`
+                        )}
                   </span>
                 </h3>
 
                 {roundWeapons.length === 0 ? (
                   <p className="text-xs text-[#64748B] italic py-2">
-                    Không ghi nhận giao tranh hoặc đổi vũ khí trong giai đoạn này.
+                    {tr(
+                      'No combat fire or weapon swaps recorded in this phase.',
+                      'Không ghi nhận giao tranh hoặc đổi vũ khí trong giai đoạn này.'
+                    )}
                   </p>
                 ) : (
                   <div className="space-y-2">
                     {roundWeapons.map((w) => {
-                      const hsRate =
-                        w.hits > 0 ? Math.round((w.headshots / w.hits) * 100) : 0;
+                      const hsRate = w.hits > 0 ? Math.round((w.headshots / w.hits) * 100) : 0;
                       const dmgBarPercent =
                         w.damageDealt > 0
                           ? Math.max(8, Math.round((w.damageDealt / maxRoundWeaponDmg) * 100))
@@ -323,7 +434,9 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                                   CATEGORY_BADGE_STYLES[w.category] || CATEGORY_BADGE_STYLES.Other
                                 }`}
                               >
-                                {w.category === 'Throwable' ? 'NÉM' : w.category}
+                                {w.category === 'Throwable'
+                                  ? tr('UTIL', 'NÉM')
+                                  : w.category}
                               </span>
                               <span className="text-xs font-bold text-[#EEF2F6] truncate">
                                 {w.weaponName}
@@ -332,7 +445,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
 
                             {w.category === 'Throwable' ? (
                               <span className="font-mono text-[11px] font-bold text-[#38BDF8] tabular-nums">
-                                {w.throwablesUsed || 1} quả
+                                {w.throwablesUsed || 1} {tr('used', 'quả')}
                               </span>
                             ) : (
                               <span className="font-mono text-[11px] font-bold text-[#E59A23] tabular-nums">
@@ -356,14 +469,12 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                                 <span>
                                   {w.damageDealt > 0
                                     ? `${w.hits} hit - HS ${hsRate}%`
-                                    : 'Trang bị (chưa khai hỏa)'}
+                                    : tr('Equipped (no shots)', 'Trang bị (chưa khai hỏa)')}
                                 </span>
 
                                 <div className="flex items-center gap-2">
                                   {w.kills > 0 && (
-                                    <span className="text-[#10B981] font-bold">
-                                      {w.kills}K
-                                    </span>
+                                    <span className="text-[#10B981] font-bold">{w.kills}K</span>
                                   )}
                                   {(w.maxKillDistanceMeters || 0) > 0 && (
                                     <span className="text-[#38BDF8]">
@@ -388,9 +499,14 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                     onClick={() => setShowRoundMinimap((prev) => !prev)}
                     className="w-full flex items-center justify-between px-3 py-2 rounded-[2px] bg-[#0A0D12] hover:bg-[#171D28] border border-[#232B3B] text-xs font-mono font-bold text-[#E59A23] transition duration-150"
                   >
-                    <span>SƠ ĐỒ 2D BO &amp; DI CHUYỂN ({mapName || 'PUBG'})</span>
+                    <span>
+                      {tr(
+                        `2D ZONE & ROTATION MAP (${mapName || 'PUBG'})`,
+                        `SƠ ĐỒ 2D BO & DI CHUYỂN (${mapName || 'PUBG'})`
+                      )}
+                    </span>
                     <span className="text-[11px] text-[#94A3B8]">
-                      {showRoundMinimap ? 'Thu gọn' : 'Mở bản đồ'}
+                      {showRoundMinimap ? tr('Collapse', 'Thu gọn') : tr('Open Map', 'Mở bản đồ')}
                     </span>
                   </button>
                   {showRoundMinimap && (
@@ -406,7 +522,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               <div>
                 <h3 className="font-mono font-bold text-[#10B981] text-[11px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <CheckCircle size={13} weight="bold" aria-hidden="true" />
-                  <span>Điểm làm tốt</span>
+                  <span>{tr('What Went Well', 'Điểm làm tốt')}</span>
                 </h3>
                 <ul className="space-y-1.5 text-[#EEF2F6] text-xs">
                   {activeRound.strengths.length > 0 ? (
@@ -415,12 +531,15 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                         key={idx}
                         className="p-2.5 rounded-[2px] bg-[#10B981]/10 border border-[#10B981]/30 leading-relaxed"
                       >
-                        {s}
+                        {ts(s)}
                       </li>
                     ))
                   ) : (
                     <li className="text-[#64748B] italic text-xs">
-                      Không có đột biến nổi bật ở giai đoạn này.
+                      {tr(
+                        'Standard execution with no major spikes in this phase.',
+                        'Không có đột biến nổi bật ở giai đoạn này.'
+                      )}
                     </li>
                   )}
                 </ul>
@@ -429,7 +548,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               <div>
                 <h3 className="font-mono font-bold text-[#E59A23] text-[11px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <ShieldWarning size={13} weight="bold" aria-hidden="true" />
-                  <span>Lỗi chiến thuật cần khắc phục</span>
+                  <span>{tr('Tactical Mistakes to Fix', 'Lỗi chiến thuật cần khắc phục')}</span>
                 </h3>
                 <ul className="space-y-1.5 text-[#EEF2F6] text-xs">
                   {activeRound.mistakes.length > 0 ? (
@@ -438,12 +557,15 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                         key={idx}
                         className="p-2.5 rounded-[2px] bg-[#E59A23]/10 border border-[#E59A23]/30 leading-relaxed"
                       >
-                        {m}
+                        {ts(m)}
                       </li>
                     ))
                   ) : (
                     <li className="text-[#64748B] italic text-xs">
-                      Xử lý ổn định, không mắc lỗi vị trí.
+                      {tr(
+                        'Clean positioning; no critical errors detected.',
+                        'Xử lý ổn định, không mắc lỗi vị trí.'
+                      )}
                     </li>
                   )}
                 </ul>
@@ -453,9 +575,76 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
-      {/* TAB 2: TONG KET AI COACH */}
+      {/* TAB 2: MATCH OVERVIEW + PERSONAL NOTES & TAGS */}
       {activeTab === 'MATCH' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
+          {matchId && (
+            <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-mono text-[11px] font-bold uppercase tracking-wider text-[#38BDF8] flex items-center gap-1.5">
+                  <NotePencil size={13} weight="bold" aria-hidden="true" />
+                  <span>{tr('Personal Match Tags & Notes', 'Nhãn & Ghi chú cá nhân')}</span>
+                </h2>
+                {noteSavedFlash && (
+                  <span className="font-mono text-[10px] font-bold text-[#10B981]">
+                    {tr('Saved', 'Đã lưu')}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_MATCH_TAGS.map((tag) => {
+                  const active = matchTags.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => handleToggleTag(tag)}
+                      className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] font-bold border transition duration-150 ${
+                        active
+                          ? isValo
+                            ? 'bg-[#FF4655]/20 border-[#FF4655] text-[#FF4655]'
+                            : 'bg-[#E59A23]/20 border-[#E59A23] text-[#E59A23]'
+                          : 'bg-[#10141C] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6]'
+                      }`}
+                    >
+                      #{tag}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="match-personal-note" className="sr-only">
+                  {tr('Personal tactical notes for this match', 'Ghi chú rút kinh nghiệm cho trận này')}
+                </label>
+                <textarea
+                  id="match-personal-note"
+                  rows={2}
+                  value={matchNote}
+                  onChange={(e) => setMatchNote(e.target.value)}
+                  onBlur={handleSaveNote}
+                  placeholder={tr(
+                    'Write your own VOD review notes, callout reminders, or scrim takeaways...',
+                    'Ghi chú lại bài học rút ra, callout team hoặc điểm cần sửa ở trận này...'
+                  )}
+                  className="w-full px-2.5 py-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B] focus:border-[#38BDF8] text-xs text-[#EEF2F6] placeholder-[#64748B] focus:outline-none resize-none"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSaveNote}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[10px] font-bold text-[#EEF2F6] transition duration-150"
+                  >
+                    <FloppyDisk size={12} weight="bold" aria-hidden="true" />
+                    <span>{tr('Save Note', 'Lưu ghi chú')}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {!isValo && (
             <PubgMinimapPanel
               mapName={mapName || 'PUBG'}
@@ -463,19 +652,23 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               selectedPhase={activeRound?.roundNumber}
             />
           )}
+
           {!report ? (
             <p className="text-[#64748B] text-xs leading-relaxed">
-              Chọn một trận đấu đã phân tích để xem đánh giá tổng quát từ AI Coach.
+              {tr(
+                'Select an analyzed match to inspect overall AI Coach scoring and drills.',
+                'Chọn một trận đấu đã phân tích để xem đánh giá tổng quát từ AI Coach.'
+              )}
             </p>
           ) : (
             <>
               <div className="p-3.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <h2 className="font-display text-sm font-bold text-[#EEF2F6]">
-                    Đánh giá tổng quan
+                    {tr('Match Summary', 'Đánh giá tổng quan')}
                   </h2>
                   <p className="text-xs text-[#94A3B8] leading-relaxed max-w-[65ch]">
-                    {report.coachCommentary}
+                    {ts(report.coachCommentary)}
                   </p>
                 </div>
                 <div
@@ -493,7 +686,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               {matchWeaponSummary.length > 0 && (
                 <div>
                   <h3 className="font-mono font-bold text-[#E59A23] text-[11px] uppercase tracking-wider mb-2">
-                    Thống kê vũ khí cả trận
+                    {tr('Full-Match Weapon Breakdown', 'Thống kê vũ khí cả trận')}
                   </h3>
                   <div className="space-y-1.5">
                     {matchWeaponSummary.slice(0, 5).map((w) => (
@@ -507,7 +700,9 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                         </div>
                         <div className="font-mono text-[11px] text-[#94A3B8] tabular-nums shrink-0">
                           {w.category === 'Throwable' ? (
-                            <span>{w.throwablesUsed || 0} lần dùng</span>
+                            <span>
+                              {w.throwablesUsed || 0} {tr('used', 'lần dùng')}
+                            </span>
                           ) : (
                             <span>
                               <strong className="text-[#E59A23]">{w.damageDealt}</strong> DMG -{' '}
@@ -523,7 +718,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
 
               <div>
                 <h3 className="font-mono font-bold text-[#10B981] text-[11px] uppercase tracking-wider mb-1.5">
-                  Điểm mạnh nổi bật
+                  {tr('Key Strengths', 'Điểm mạnh nổi bật')}
                 </h3>
                 <ul className="space-y-1.5 text-xs text-[#EEF2F6]">
                   {report.strengthsSummary.map((item, idx) => (
@@ -531,7 +726,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                       key={idx}
                       className="p-2 rounded-[2px] bg-[#0A0D12] border-l-2 border-[#10B981] leading-relaxed"
                     >
-                      {item}
+                      {ts(item)}
                     </li>
                   ))}
                 </ul>
@@ -539,7 +734,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
 
               <div>
                 <h3 className="font-mono font-bold text-[#F43F5E] text-[11px] uppercase tracking-wider mb-1.5">
-                  Điểm yếu cần cải thiện
+                  {tr('Areas for Improvement', 'Điểm yếu cần cải thiện')}
                 </h3>
                 <ul className="space-y-1.5 text-xs text-[#EEF2F6]">
                   {report.weaknessesSummary.map((item, idx) => (
@@ -547,7 +742,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                       key={idx}
                       className="p-2 rounded-[2px] bg-[#0A0D12] border-l-2 border-[#F43F5E] leading-relaxed"
                     >
-                      {item}
+                      {ts(item)}
                     </li>
                   ))}
                 </ul>
@@ -557,7 +752,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 <div>
                   <h3 className="font-mono font-bold text-[#38BDF8] text-[11px] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                     <ListChecks size={13} weight="bold" aria-hidden="true" />
-                    <span>Bài tập đề xuất</span>
+                    <span>{tr('Recommended Drills', 'Bài tập đề xuất')}</span>
                   </h3>
                   <ul className="space-y-1.5 text-xs text-[#94A3B8]">
                     {report.recommendedDrills.map((drill, idx) => (
@@ -565,7 +760,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                         key={idx}
                         className="p-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] leading-relaxed"
                       >
-                        {drill}
+                        {ts(drill)}
                       </li>
                     ))}
                   </ul>
@@ -576,12 +771,15 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
-      {/* TAB 3: HOI DAP CHIEN THUAT VOI AI COACH */}
+      {/* TAB 3: INTERACTIVE AI COACH Q&A */}
       {activeTab === 'CHAT' && (
         <div className="flex flex-col flex-1 min-h-[62vh] max-h-[76vh] justify-between gap-3">
           {!matchId ? (
             <p className="text-xs text-[#64748B]">
-              Chọn một trận đấu ở danh sách bên trái để bắt đầu hỏi đáp chiến thuật với AI Coach.
+              {tr(
+                'Select a match from the left sidebar to ask tactical questions with AI Coach.',
+                'Chọn một trận đấu ở danh sách bên trái để bắt đầu hỏi đáp chiến thuật với AI Coach.'
+              )}
             </p>
           ) : (
             <>
@@ -589,16 +787,30 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 {messages.length === 0 ? (
                   <div className="space-y-3">
                     <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#94A3B8] leading-relaxed">
-                      AI Coach đã đọc dữ liệu <strong className="text-[#EEF2F6] font-mono">{rounds.length}</strong>{' '}
-                      {isValo ? 'round' : 'giai đoạn vòng bo'} của trận{' '}
-                      <strong className="text-[#EEF2F6]">{mapName || gameType}</strong>. Bạn muốn phân tích tình huống nào?
+                      {isEn ? (
+                        <>
+                          AI Coach indexed{' '}
+                          <strong className="text-[#EEF2F6] font-mono">{rounds.length}</strong>{' '}
+                          {isValo ? 'rounds' : 'zone phases'} on{' '}
+                          <strong className="text-[#EEF2F6]">{mapName || gameType}</strong>. Ask
+                          about any fight, rotation, or loadout decision.
+                        </>
+                      ) : (
+                        <>
+                          AI Coach đã đọc dữ liệu{' '}
+                          <strong className="text-[#EEF2F6] font-mono">{rounds.length}</strong>{' '}
+                          {isValo ? 'round' : 'giai đoạn vòng bo'} của trận{' '}
+                          <strong className="text-[#EEF2F6]">{mapName || gameType}</strong>. Bạn
+                          muốn phân tích tình huống nào?
+                        </>
+                      )}
                     </div>
 
                     <div className="space-y-1.5">
                       <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
-                        Gợi ý câu hỏi nhanh
+                        {tr('Quick Tactical Prompts', 'Gợi ý câu hỏi nhanh')}
                       </p>
-                      {QUICK_PROMPTS[gameType].map((prompt) => (
+                      {quickPrompts.map((prompt) => (
                         <button
                           key={prompt}
                           type="button"
@@ -652,20 +864,23 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                 className="flex gap-2 pt-2.5 border-t border-[#232B3B]"
               >
                 <label htmlFor="ai-coach-question" className="sr-only">
-                  Câu hỏi chiến thuật gửi AI Coach
+                  {tr('Tactical question for AI Coach', 'Câu hỏi chiến thuật gửi AI Coach')}
                 </label>
                 <input
                   id="ai-coach-question"
                   type="text"
                   value={questionInput}
                   onChange={(e) => setQuestionInput(e.target.value)}
-                  placeholder="Hỏi về cách bắn, chọn súng, di chuyển..."
+                  placeholder={tr(
+                    'Ask about positioning, economy, rotations...',
+                    'Hỏi về cách bắn, chọn súng, di chuyển...'
+                  )}
                   disabled={sendingChat}
                   className="flex-1 min-w-0 px-3 py-2 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] text-xs text-[#EEF2F6] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
                 />
                 <button
                   type="submit"
-                  aria-label="Gửi câu hỏi cho AI Coach"
+                  aria-label={tr('Send question to AI Coach', 'Gửi câu hỏi cho AI Coach')}
                   disabled={sendingChat || !questionInput.trim()}
                   className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[2px] text-xs font-bold transition duration-150 shrink-0 disabled:opacity-40 active:translate-y-[1px] ${
                     isValo
@@ -674,7 +889,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   }`}
                 >
                   <PaperPlaneRight size={14} weight="bold" aria-hidden="true" />
-                  <span>Gửi</span>
+                  <span>{tr('Send', 'Gửi')}</span>
                 </button>
               </form>
             </>
