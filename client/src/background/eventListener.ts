@@ -23,11 +23,34 @@ class GameEventListener {
   private timelineEvents: TimelineEvent[] = [];
   private awaitingFirstRoundStart = false;
 
+  private openDesktopWindow(): void {
+    if (typeof overwolf === 'undefined' || !overwolf.windows) return;
+    overwolf.windows.obtainDeclaredWindow('desktop', (win) => {
+      if (win.success && win.window) {
+        overwolf.windows.restore(win.window.id);
+      }
+    });
+  }
+
   public init(): void {
     if (typeof overwolf === 'undefined' || !overwolf.games) {
       console.log('[EventListener] Chạy ngoài môi trường Overwolf.');
       return;
     }
+
+    const launchedByGameEvent =
+      typeof window !== 'undefined' && window.location.search.includes('source=gamelaunchevent');
+
+    // Khi người dùng mở app trực tiếp từ Overwolf Dock/Desktop thì mở ngay cửa sổ chính
+    if (!launchedByGameEvent) {
+      this.openDesktopWindow();
+    }
+
+    overwolf.extensions?.onAppLaunchTriggered?.addListener((event) => {
+      if (event?.origin !== 'gamelaunchevent') {
+        this.openDesktopWindow();
+      }
+    });
 
     // Kiểm tra game đang mở sẵn khi app khởi động
     overwolf.games.getRunningGameInfo((gameInfo) => {
@@ -260,13 +283,7 @@ if (getAuthToken()) {
     this.awaitingFirstRoundStart = false;
 
     // Mở cửa sổ Desktop App để người dùng xem lại video & phân tích ngay sau trận
-    if (typeof overwolf !== 'undefined' && overwolf.windows) {
-      overwolf.windows.obtainDeclaredWindow('desktop', (win) => {
-        if (win.success && win.window) {
-          overwolf.windows.restore(win.window.id);
-        }
-      });
-    }
+    this.openDesktopWindow();
   }
 }
 

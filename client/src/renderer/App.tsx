@@ -167,7 +167,7 @@ const UpdateBanner: React.FC = () => {
   );
 };
 
-const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.6.0';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.6.1';
 
 const AppFooterVersion: React.FC<{ isElectronRuntime?: boolean }> = ({
   isElectronRuntime = false,
