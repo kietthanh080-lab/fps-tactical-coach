@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle,
   Crosshair,
+  DownloadSimple,
+  FileCsv,
   FloppyDisk,
   ListChecks,
   NotePencil,
@@ -85,6 +87,14 @@ const QUICK_PROMPTS_VI: Record<'VALORANT' | 'PUBG', string[]> = {
     'Đánh giá bộ vũ khí & sát thương trận này',
   ],
 };
+
+function polarPoint(cx: number, cy: number, radius: number, index: number, total = 5) {
+  const angle = -Math.PI / 2 + (index * 2 * Math.PI) / total;
+  return {
+    x: cx + radius * Math.cos(angle),
+    y: cy + radius * Math.sin(angle),
+  };
+}
 
 export const TacticalReport: React.FC<TacticalReportProps> = ({
   gameType,
@@ -175,6 +185,175 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
     );
   }, [rounds]);
 
+  // Inspired by akiver/cs-demo-manager: Pro FPS Metrics (KAST %, ADR, HS %, Impact) + 5-Axis Combat Radar
+  const proTelemetryMetrics = useMemo(() => {
+    const totalRounds = Math.max(1, rounds.length);
+    let totalKills = 0;
+    let totalDeaths = 0;
+    let totalAssists = 0;
+    let totalDamage = 0;
+    let kastRounds = 0;
+    let multiKillRounds = 0;
+    let cleanRounds = 0;
+    let totalHits = 0;
+    let totalHeadshots = 0;
+    let totalThrowables = 0;
+
+    for (const r of rounds) {
+      totalKills += r.kills;
+      totalDeaths += r.deaths;
+      totalAssists += r.assists;
+      totalDamage += r.damageDealt;
+      if (r.kills >= 2) multiKillRounds += 1;
+      if (r.mistakes.length === 0) cleanRounds += 1;
+
+      const isKast =
+        r.kills > 0 ||
+        r.assists > 0 ||
+        r.deaths === 0 ||
+        r.result === 'WIN' ||
+        r.result === 'SURVIVED';
+      if (isKast) kastRounds += 1;
+
+      for (const w of r.weaponStats || []) {
+        totalHits += w.hits || 0;
+        totalHeadshots += w.headshots || 0;
+        totalThrowables += w.throwablesUsed || 0;
+      }
+    }
+
+    const kastPct = Math.round((kastRounds / totalRounds) * 100);
+    const adr = Math.round(totalDamage / totalRounds);
+    const hsPct = totalHits > 0 ? Math.round((totalHeadshots / totalHits) * 100) : isValo ? 22 : 18;
+    const kpr = totalKills / totalRounds;
+    const targetAdr = isValo ? 155 : 190;
+
+    const rawImpact =
+      0.42 +
+      kpr * 0.62 +
+      (adr / targetAdr) * 0.42 +
+      (kastPct / 100) * 0.32 +
+      (multiKillRounds / totalRounds) * 0.45;
+    const impactRating = Math.min(2.4, Math.max(0.35, Number(rawImpact.toFixed(2))));
+
+    const clampAxis = (val: number) => Math.min(99, Math.max(22, Math.round(val)));
+
+    const axes = [
+      {
+        key: 'FIRE',
+        label: tr('FIRE', 'HỎA LỰC'),
+        value: clampAxis((adr / targetAdr) * 78 + multiKillRounds * 8),
+      },
+      {
+        key: 'AIM',
+        label: tr('AIM', 'CHUẨN XÁC'),
+        value: clampAxis(hsPct * (isValo ? 2.4 : 2.6) + (totalKills > 0 ? 18 : 8)),
+      },
+      {
+        key: 'KAST',
+        label: 'KAST',
+        value: clampAxis(kastPct),
+      },
+      {
+        key: 'TEMPO',
+        label: tr('TEMPO', 'NHỊP ĐỘ'),
+        value: clampAxis(kpr * 58 + (totalAssists / totalRounds) * 35 + 24),
+      },
+      {
+        key: 'DISCIPLINE',
+        label: tr('UTIL', 'KỶ LUẬT'),
+        value: clampAxis((cleanRounds / totalRounds) * 76 + Math.min(22, totalThrowables * 6)),
+      },
+    ];
+
+    return {
+      kastPct,
+      adr,
+      hsPct,
+      impactRating,
+      totalKills,
+      totalDeaths,
+      totalAssists,
+      totalDamage,
+      axes,
+    };
+  }, [isValo, rounds, tr]);
+
+  const handleExportMatchCsv = () => {
+    if (rounds.length === 0) return;
+    const header = [
+      isValo ? 'Round' : 'Phase',
+      'Result',
+      'Economy_Stage',
+      'Playstyle',
+      'Kills',
+      'Deaths',
+      'Assists',
+      'Damage',
+      'Top_Weapon',
+      'Strengths',
+      'Mistakes',
+    ];
+
+    const escapeCsv = (val: string | number) => {
+      const str = String(val ?? '').replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = rounds.map((r) => {
+      const topWeapon = r.weaponStats?.[0]?.weaponName || '';
+      return [
+        r.roundNumber,
+        r.result,
+        r.economyType,
+        r.tacticalStyle,
+        r.kills,
+        r.deaths,
+        r.assists,
+        r.damageDealt,
+        topWeapon,
+        r.strengths.map((s) => ts(s)).join(' | '),
+        r.mistakes.map((m) => ts(m)).join(' | '),
+      ]
+        .map(escapeCsv)
+        .join(',');
+    });
+
+    const csvContent = `\uFEFF${header.join(',')}\n${rows.join('\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `telemetry-${gameType.toLowerCase()}-${(mapName || 'match').toLowerCase()}-${(matchId || 'export').slice(0, 8)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
+  const handleExportMatchJson = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      matchId,
+      gameType,
+      mapName,
+      metrics: proTelemetryMetrics,
+      personalAnnotation: { tags: matchTags, note: matchNote },
+      report,
+      weaponSummary: matchWeaponSummary,
+      rounds,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `telemetry-${gameType.toLowerCase()}-${(matchId || 'export').slice(0, 8)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
   const handleAskCoach = async (rawQuestion: string) => {
     const trimmed = rawQuestion.trim();
     if (!trimmed || sendingChat) return;
@@ -243,6 +422,16 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
   const roundWeapons = activeRound?.weaponStats || [];
   const maxRoundWeaponDmg = Math.max(1, ...roundWeapons.map((w) => w.damageDealt));
   const quickPrompts = isEn ? QUICK_PROMPTS_EN[gameType] : QUICK_PROMPTS_VI[gameType];
+
+  const radarCx = 120;
+  const radarCy = 104;
+  const radarMaxR = 64;
+  const radarPolygonPoints = proTelemetryMetrics.axes
+    .map((ax, i) => {
+      const pt = polarPoint(radarCx, radarCy, (ax.value / 100) * radarMaxR, i, 5);
+      return `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`;
+    })
+    .join(' ');
 
   return (
     <section
@@ -355,7 +544,12 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
               {matchId && (
                 <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[2px] bg-[#0A0D12] border border-[#232B3B]">
                   <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#94A3B8] truncate">
-                    <Tag size={12} weight="bold" className="text-[#38BDF8] shrink-0" aria-hidden="true" />
+                    <Tag
+                      size={12}
+                      weight="bold"
+                      className="text-[#38BDF8] shrink-0"
+                      aria-hidden="true"
+                    />
                     <span className="truncate">
                       {matchTags.length > 0
                         ? matchTags.join(', ')
@@ -369,7 +563,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                     onClick={() => setActiveTab('MATCH')}
                     className="font-mono text-[10px] font-bold text-[#38BDF8] hover:underline shrink-0"
                   >
-                    {tr('Notes & Tags', 'Ghi chú & Nhãn')}
+                    {tr('Notes & Radar', 'Ghi chú & Radar')}
                   </button>
                 </div>
               )}
@@ -434,9 +628,7 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                                   CATEGORY_BADGE_STYLES[w.category] || CATEGORY_BADGE_STYLES.Other
                                 }`}
                               >
-                                {w.category === 'Throwable'
-                                  ? tr('UTIL', 'NÉM')
-                                  : w.category}
+                                {w.category === 'Throwable' ? tr('UTIL', 'NÉM') : w.category}
                               </span>
                               <span className="text-xs font-bold text-[#EEF2F6] truncate">
                                 {w.weaponName}
@@ -501,8 +693,8 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   >
                     <span>
                       {tr(
-                        `2D ZONE & ROTATION MAP (${mapName || 'PUBG'})`,
-                        `SƠ ĐỒ 2D BO & DI CHUYỂN (${mapName || 'PUBG'})`
+                        `2D ZONE & HEATMAP (${mapName || 'PUBG'})`,
+                        `SƠ ĐỒ 2D BO & NHIỆT ĐỘ (${mapName || 'PUBG'})`
                       )}
                     </span>
                     <span className="text-[11px] text-[#94A3B8]">
@@ -575,9 +767,163 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
         </div>
       )}
 
-      {/* TAB 2: MATCH OVERVIEW + PERSONAL NOTES & TAGS */}
+      {/* TAB 2: MATCH OVERVIEW + PRO TELEMETRY RADAR + CSV/JSON EXPORT + NOTES */}
       {activeTab === 'MATCH' && (
         <div className="space-y-4 text-sm overflow-y-auto max-h-[76vh] tactical-scrollbar pr-1">
+          {rounds.length > 0 && (
+            <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-mono text-[11px] font-bold uppercase tracking-wider text-[#EEF2F6]">
+                  {tr('5-Axis Combat Radar & Pro Metrics', 'Biểu đồ Radar 5 Trục & Chỉ số Chuyên sâu')}
+                </h2>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleExportMatchCsv}
+                    title={tr('Export round-by-round telemetry to CSV', 'Xuất dữ liệu từng round ra CSV')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[10px] font-bold text-[#10B981] transition"
+                  >
+                    <FileCsv size={12} weight="bold" aria-hidden="true" />
+                    <span>CSV</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportMatchJson}
+                    title={tr('Export full match telemetry JSON', 'Xuất toàn bộ dữ liệu trận ra JSON')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[10px] font-bold text-[#38BDF8] transition"
+                  >
+                    <DownloadSimple size={12} weight="bold" aria-hidden="true" />
+                    <span>JSON</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* KAST / ADR / HS% / IMPACT Strip */}
+              <div className="grid grid-cols-4 gap-1.5 font-mono text-center tabular-nums">
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">KAST</span>
+                  <span className="text-xs font-bold text-[#10B981]">
+                    {proTelemetryMetrics.kastPct}%
+                  </span>
+                </div>
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">ADR</span>
+                  <span className="text-xs font-bold text-[#E59A23]">
+                    {proTelemetryMetrics.adr}
+                  </span>
+                </div>
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">HS%</span>
+                  <span className="text-xs font-bold text-[#38BDF8]">
+                    {proTelemetryMetrics.hsPct}%
+                  </span>
+                </div>
+                <div className="p-1.5 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
+                  <span className="block text-[9px] text-[#64748B]">IMPACT</span>
+                  <span
+                    className={`text-xs font-bold ${
+                      isValo ? 'text-[#FF4655]' : 'text-[#EEF2F6]'
+                    }`}
+                  >
+                    {proTelemetryMetrics.impactRating}
+                  </span>
+                </div>
+              </div>
+
+              {/* 5-Axis Pentagon SVG Radar */}
+              <div className="rounded-[2px] bg-[#0B1017] border border-[#232B3B] p-1">
+                <svg
+                  viewBox="0 0 240 198"
+                  className="w-full h-auto max-h-44 mx-auto block select-none"
+                  role="img"
+                  aria-label={tr(
+                    '5-axis tactical performance radar chart',
+                    'Biểu đồ radar 5 trục hiệu suất chiến thuật'
+                  )}
+                >
+                  {[0.35, 0.68, 1].map((ring) => {
+                    const ringPts = [0, 1, 2, 3, 4]
+                      .map((idx) => {
+                        const p = polarPoint(radarCx, radarCy, radarMaxR * ring, idx, 5);
+                        return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+                      })
+                      .join(' ');
+                    return (
+                      <polygon
+                        key={ring}
+                        points={ringPts}
+                        fill="none"
+                        stroke="#1E293B"
+                        strokeWidth={1}
+                      />
+                    );
+                  })}
+
+                  {[0, 1, 2, 3, 4].map((idx) => {
+                    const outer = polarPoint(radarCx, radarCy, radarMaxR, idx, 5);
+                    return (
+                      <line
+                        key={idx}
+                        x1={radarCx}
+                        y1={radarCy}
+                        x2={outer.x}
+                        y2={outer.y}
+                        stroke="#1E293B"
+                        strokeWidth={1}
+                      />
+                    );
+                  })}
+
+                  <polygon
+                    points={radarPolygonPoints}
+                    fill={isValo ? 'rgba(255, 70, 85, 0.22)' : 'rgba(229, 154, 35, 0.22)'}
+                    stroke={isValo ? '#FF4655' : '#E59A23'}
+                    strokeWidth={2}
+                  />
+
+                  {proTelemetryMetrics.axes.map((ax, idx) => {
+                    const dot = polarPoint(radarCx, radarCy, (ax.value / 100) * radarMaxR, idx, 5);
+                    const lbl = polarPoint(radarCx, radarCy, radarMaxR + 22, idx, 5);
+                    return (
+                      <React.Fragment key={ax.key}>
+                        <circle
+                          cx={dot.x}
+                          cy={dot.y}
+                          r={3.2}
+                          fill={isValo ? '#FF4655' : '#E59A23'}
+                          stroke="#EEF2F6"
+                          strokeWidth={1}
+                        />
+                        <text
+                          x={lbl.x}
+                          y={lbl.y - 3}
+                          textAnchor="middle"
+                          fill="#94A3B8"
+                          fontSize="8.5"
+                          fontFamily="JetBrains Mono, monospace"
+                          fontWeight="bold"
+                        >
+                          {ax.label}
+                        </text>
+                        <text
+                          x={lbl.x}
+                          y={lbl.y + 8}
+                          textAnchor="middle"
+                          fill="#EEF2F6"
+                          fontSize="9.5"
+                          fontFamily="JetBrains Mono, monospace"
+                          fontWeight="bold"
+                        >
+                          {ax.value}
+                        </text>
+                      </React.Fragment>
+                    );
+                  })}
+                </svg>
+              </div>
+            </div>
+          )}
+
           {matchId && (
             <div className="p-3 rounded-[2px] bg-[#0A0D12] border border-[#232B3B] space-y-2.5">
               <div className="flex items-center justify-between gap-2">

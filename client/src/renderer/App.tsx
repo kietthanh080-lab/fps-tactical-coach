@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   SignOut,
   SlidersHorizontal,
+  Strategy,
   TrendDown,
   TrendUp,
   Trophy,
@@ -71,6 +72,7 @@ import { MatchReportUI, TacticalReport } from './components/TacticalReport';
 import { FriendsLeaderboard } from './components/FriendsLeaderboard';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 import { MatchTrendModal } from './components/MatchTrendModal';
+import { TacticalBoardModal } from './components/TacticalBoardModal';
 import { SettingsTabId, UnifiedSettingsModal } from './components/UnifiedSettingsModal';
 
 interface UserProfile {
@@ -215,7 +217,7 @@ const UpdateBanner: React.FC = () => {
   );
 };
 
-const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.7.0';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.8.0';
 
 const AppFooterVersion: React.FC<{
   isElectronRuntime?: boolean;
@@ -424,6 +426,8 @@ const AppContent: React.FC<AppContentProps> = ({
   const isOverwolfRuntime =
     typeof overwolf !== 'undefined' && Boolean(overwolf.media?.replays || overwolf.streaming);
 
+  const [showTacticalBoard, setShowTacticalBoard] = useState(false);
+
   const openSettingsAt = useCallback((tab: SettingsTabId = 'GENERAL') => {
     setSettingsInitialTab(tab);
     setShowUnifiedSettings(true);
@@ -435,6 +439,9 @@ const AppContent: React.FC<AppContentProps> = ({
         e.preventDefault();
         setSettingsInitialTab('GENERAL');
         setShowUnifiedSettings((prev) => !prev);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setShowTacticalBoard((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onGlobalKey);
@@ -1570,6 +1577,16 @@ const AppContent: React.FC<AppContentProps> = ({
 
               <button
                 type="button"
+                onClick={() => setShowTacticalBoard(true)}
+                title={tr('2D Strategy Board (Ctrl+B)', 'Sa bàn chiến thuật 2D (Ctrl+B)')}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150"
+              >
+                <Strategy size={14} weight="bold" aria-hidden="true" />
+                <span>{tr('Strat Board', 'Sa bàn 2D')}</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => openSettingsAt('GENERAL')}
                 title={tr('Settings (Ctrl+,)', 'Cài đặt (Ctrl+,)')}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150"
@@ -1900,6 +1917,12 @@ const AppContent: React.FC<AppContentProps> = ({
           isElectronRuntime={isElectronRuntime}
           onOpenSettings={() => openSettingsAt('GENERAL')}
         />
+        <TacticalBoardModal
+          isOpen={showTacticalBoard}
+          initialGame={searchGame}
+          dataRevision={dataRevision}
+          onClose={() => setShowTacticalBoard(false)}
+        />
         {sharedSettingsModal}
         <UpdateBanner />
       </div>
@@ -2044,6 +2067,16 @@ const AppContent: React.FC<AppContentProps> = ({
             >
               <ChartBar size={14} weight="bold" aria-hidden="true" />
               <span>{tr('20-Match Form', 'Phong độ 20 trận')}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowTacticalBoard(true)}
+              title={tr('Interactive 2D Strategy & Callout Board (Ctrl+B)', 'Sa bàn Chiến thuật & Callout 2D (Ctrl+B)')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#E59A23] transition duration-150 active:translate-y-[1px]"
+            >
+              <Strategy size={14} weight="bold" aria-hidden="true" />
+              <span>{tr('Strat Board', 'Sa bàn 2D')}</span>
             </button>
 
             <button
@@ -2848,6 +2881,14 @@ const AppContent: React.FC<AppContentProps> = ({
         gameType={activeGameTab}
         matches={tabBaseVideos.slice(0, 20)}
         onClose={() => setShowTrendModal(false)}
+      />
+
+      <TacticalBoardModal
+        isOpen={showTacticalBoard}
+        initialGame={activeGameTab}
+        initialMapName={activeMatch?.map_name || ''}
+        dataRevision={dataRevision}
+        onClose={() => setShowTacticalBoard(false)}
       />
 
       {sharedSettingsModal}

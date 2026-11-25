@@ -26,6 +26,7 @@ const ANNOTATIONS_KEY = 'tactical_replay_match_annotations_v1';
 const BOOKMARKS_PREFIX = 'tactical_replay_bookmarks_';
 const SETTINGS_VAULT_KEY = 'tactical_replay_settings_vault_v1';
 const TELESTRATOR_PREFIX = 'tactical_replay_telestrator_';
+export const STRAT_PLAYBOOK_KEY = 'tactical_replay_strat_playbook_v1';
 
 export const PRESET_MATCH_TAGS = [
   'Clutch',
@@ -163,6 +164,7 @@ export interface FullLocalBackupPayload {
   exportedAt: string;
   appSettings: AppUserSettings;
   settingsVault: unknown[];
+  stratPlaybook?: unknown[];
   matchAnnotations: Record<string, MatchAnnotation>;
   bookmarksByMatch: Record<string, ReplayBookmark[]>;
   telestratorByMatch: Record<string, unknown>;
@@ -201,11 +203,23 @@ export function exportFullLocalBackup(): string {
     // Ignore
   }
 
+  let stratPlaybook: unknown[] = [];
+  try {
+    const rawPlaybook = localStorage.getItem(STRAT_PLAYBOOK_KEY);
+    if (rawPlaybook) {
+      const parsed = JSON.parse(rawPlaybook);
+      if (Array.isArray(parsed)) stratPlaybook = parsed;
+    }
+  } catch {
+    // Ignore
+  }
+
   const payload: FullLocalBackupPayload = {
     schemaVersion: 1,
     exportedAt: new Date().toISOString(),
     appSettings: loadAppSettings(),
     settingsVault,
+    stratPlaybook,
     matchAnnotations: getAllMatchAnnotations(),
     bookmarksByMatch,
     telestratorByMatch,
@@ -231,6 +245,10 @@ export function importFullLocalBackup(rawJson: string): AppUserSettings {
 
   if (Array.isArray(parsed.settingsVault)) {
     localStorage.setItem(SETTINGS_VAULT_KEY, JSON.stringify(parsed.settingsVault));
+  }
+
+  if (Array.isArray(parsed.stratPlaybook)) {
+    localStorage.setItem(STRAT_PLAYBOOK_KEY, JSON.stringify(parsed.stratPlaybook));
   }
 
   if (parsed.matchAnnotations && typeof parsed.matchAnnotations === 'object') {

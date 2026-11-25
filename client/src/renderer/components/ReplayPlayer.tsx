@@ -8,10 +8,14 @@ import {
   FastForward,
   FilmStrip,
   FolderOpen,
+  MagnifyingGlassPlus,
   Pause,
   PencilSimple,
   Play,
+  Repeat,
   Rewind,
+  SkipBack,
+  SkipForward,
   Trash,
   UploadSimple,
   VideoCamera,
@@ -53,6 +57,8 @@ interface ReplayPlayerProps {
 }
 
 type DrawTool = 'arrow' | 'circle' | 'pen';
+type MarkerCategory = 'kill' | 'death' | 'objective' | 'bookmark';
+type ZoomLevel = 1 | 1.5 | 2 | 3;
 
 interface NormalizedPoint {
   x: number;
@@ -69,10 +75,12 @@ interface TimelineMarker {
   id: string;
   roundNumber: number;
   timestampSec: number;
-  type: 'kill' | 'death' | 'objective' | 'bookmark';
+  type: MarkerCategory;
   label: string;
   isExact: boolean;
 }
+
+const ZOOM_STEPS: ZoomLevel[] = [1, 1.5, 2, 3];
 
 const formatTime = (seconds: number): string => {
   if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
@@ -118,6 +126,32 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const [duration, setDuration] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [hoveredMarker, setHoveredMarker] = useState<TimelineMarker | null>(null);
+
+  // Open-source inspired upgrades (lulzsun/RePlays & LosslessCut patterns):
+  // 1. A-B Segment Loop
+  const [loopStartSec, setLoopStartSec] = useState<number | null>(null);
+  const [loopEndSec, setLoopEndSec] = useState<number | null>(null);
+  const [loopEnabled, setLoopEnabled] = useState(false);
+
+  // 2. Digital Tactical Zoom & Pan
+  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>(1);
+  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panDragRef = useRef<{
+    active: boolean;
+    moved: boolean;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  }>({ active: false, moved: false, startX: 0, startY: 0, origX: 0, origY: 0 });
+
+  // 3. Interactive Event Marker Filter Toggles
+  const [visibleMarkerTypes, setVisibleMarkerTypes] = useState<Record<MarkerCategory, boolean>>({
+    kill: true,
+    death: true,
+    objective: true,
+    bookmark: true,
+  });
 
   const [bookmarks, setBookmarks] = useState<ReplayBookmark[]>([]);
   const [bookmarkLabelInput, setBookmarkLabelInput] = useState('');
@@ -169,12 +203,21 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   const activeVideoUrl =
     localPreviewSrc || (clipList.length > 1 ? clipVideoUrl : null) || videoSrc || clipVideoUrl;
 
+  const resetLoopAndZoom = useCallback(() => {
+    setLoopStartSec(null);
+    setLoopEndSec(null);
+    setLoopEnabled(false);
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+  }, []);
+
   const handleSelectClip = (idx: number) => {
     setSelectedClipIdx(idx);
     setLocalPreviewSrc(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    resetLoopAndZoom();
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.currentTime = 0;
@@ -199,6 +242,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     setCurrentTime(0);
     setDuration(0);
     setBookmarkLabelInput('');
+    resetLoopAndZoom();
 
     if (!matchId) {
       setShapesByRound({});
@@ -214,7 +258,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     } catch {
       setShapesByRound({});
     }
-  }, [matchId, dataRevision]);
+  }, [matchId, dataRevision, resetLoopAndZoom]);
 
   useEffect(() => {
     if (!matchId) return;
@@ -368,7 +412,10 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     outCtx.fillStyle = '#EEF2F6';
     outCtx.font = 'bold 12px sans-serif';
     outCtx.fillText(
-      `TacticalReplayAI | ${matchTitle || gameType} | ${isValo ? `R${selectedRound}` : `P${selectedRound}`}`.slice(0, 48),
+      `TacticalReplayAI | ${matchTitle || gameType} | ${isValo ? `R${selectedRound}` : `P${selectedRound}`}`.slice(
+        0,
+        48
+      ),
       20,
       exportHeight - 20
     );
@@ -471,6 +518,43 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     }
   }, []);
 
+  const cycleZoomLevel = useCallback(() => {
+    setZoomLevel((prev) => {
+      const next = ZOOM_STEPS[(ZOOM_STEPS.indexOf(prev) + 1) % ZOOM_STEPS.length];
+      if (next === 1) {
+        setPanOffset({ x: 0, y: 0 });
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSetLoopPointA = useCallback(() => {
+    const t = Math.max(0, Math.round((videoRef.current?.currentTime ?? currentTime) * 10) / 10);
+    setLoopStartSec(t);
+    if (loopEndSec !== null && loopEndSec <= t + 0.2) {
+      setLoopEndSec(null);
+      setLoopEnabled(false);
+    }
+  }, [currentTime, loopEndSec]);
+
+  const handleSetLoopPointB = useCallback(() => {
+    const t = Math.max(0, Math.round((videoRef.current?.currentTime ?? currentTime) * 10) / 10);
+    const effectiveStart = loopStartSec !== null && loopStartSec < t ? loopStartSec : Math.max(0, t - 4);
+    if (loopStartSec === null || loopStartSec >= t) {
+      setLoopStartSec(effectiveStart);
+    }
+    setLoopEndSec(t);
+    if (t > effectiveStart + 0.2) {
+      setLoopEnabled(true);
+    }
+  }, [currentTime, loopStartSec]);
+
+  const handleClearLoop = useCallback(() => {
+    setLoopStartSec(null);
+    setLoopEndSec(null);
+    setLoopEnabled(false);
+  }, []);
+
   const handleAddBookmark = useCallback(() => {
     if (!matchId || !activeVideoUrl) return;
     const rawTime = videoRef.current?.currentTime ?? currentTime;
@@ -503,39 +587,6 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     [bookmarks, matchId]
   );
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (!activeVideoUrl) return;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        seekTo((videoRef.current?.currentTime || 0) - 5);
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        seekTo((videoRef.current?.currentTime || 0) + 5);
-      } else if (e.key === ',') {
-        e.preventDefault();
-        stepFrame(-0.1);
-      } else if (e.key === '.') {
-        e.preventDefault();
-        stepFrame(0.1);
-      } else if (e.key.toLowerCase() === 'd') {
-        setDrawMode((prev) => !prev);
-      } else if (e.key.toLowerCase() === 'b' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        handleAddBookmark();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeVideoUrl, handleAddBookmark, seekTo, stepFrame, togglePlay]);
-
   const timelineMarkers = useMemo<TimelineMarker[]>(() => {
     if (duration <= 0) return [];
 
@@ -563,7 +614,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
         if (actionEvents.length > 0) {
           actionEvents.forEach((ev, evIdx) => {
             const evSec = Math.min(duration, Math.max(0, ev.timestampMs / 1000));
-            const type: TimelineMarker['type'] =
+            const type: MarkerCategory =
               ev.type === 'KILL' ? 'kill' : ev.type === 'DEATH' ? 'death' : 'objective';
 
             const weapon = ev.payload?.weapon ? ` (${String(ev.payload.weapon)})` : '';
@@ -602,7 +653,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           ? Math.min(duration, Math.max(0, explicitSec))
           : ((index + 0.5) / rounds.length) * duration;
 
-        const type: TimelineMarker['type'] =
+        const type: MarkerCategory =
           r.kills > 0 ? 'kill' : r.deaths > 0 ? 'death' : 'objective';
 
         const label =
@@ -636,27 +687,126 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
       }
     });
 
-    return markers;
+    return markers.sort((a, b) => a.timestampSec - b.timestampSec);
   }, [bookmarks, duration, isValo, rounds, selectedRound, tr]);
 
-  const handleSelectRoundAndSeek = (
-    roundNumber: number,
-    explicitSec?: number,
-    exactBookmark = false
-  ) => {
-    onSelectRound(roundNumber);
-    if (!videoRef.current) return;
-    if (typeof explicitSec === 'number') {
-      seekTo(Math.max(0, exactBookmark ? explicitSec : explicitSec - 2));
-      return;
-    }
-    const marker = timelineMarkers.find(
-      (m) => m.roundNumber === roundNumber && m.type !== 'bookmark'
-    );
-    if (marker) {
-      seekTo(Math.max(0, marker.timestampSec - 2));
-    }
-  };
+  const filteredTimelineMarkers = useMemo(
+    () => timelineMarkers.filter((m) => visibleMarkerTypes[m.type]),
+    [timelineMarkers, visibleMarkerTypes]
+  );
+
+  const handleSelectRoundAndSeek = useCallback(
+    (roundNumber: number, explicitSec?: number, exactBookmark = false) => {
+      onSelectRound(roundNumber);
+      if (!videoRef.current) return;
+      if (typeof explicitSec === 'number') {
+        seekTo(Math.max(0, exactBookmark ? explicitSec : explicitSec - 2));
+        return;
+      }
+      const marker = timelineMarkers.find(
+        (m) => m.roundNumber === roundNumber && m.type !== 'bookmark'
+      );
+      if (marker) {
+        seekTo(Math.max(0, marker.timestampSec - 2));
+      }
+    },
+    [onSelectRound, seekTo, timelineMarkers]
+  );
+
+  const jumpRelativeMarker = useCallback(
+    (direction: -1 | 1) => {
+      if (filteredTimelineMarkers.length === 0) return;
+      const now = videoRef.current?.currentTime ?? currentTime;
+      if (direction === 1) {
+        const nextMk =
+          filteredTimelineMarkers.find((m) => m.timestampSec > now + 0.4) ||
+          filteredTimelineMarkers[0];
+        handleSelectRoundAndSeek(
+          nextMk.roundNumber,
+          nextMk.timestampSec,
+          nextMk.type === 'bookmark'
+        );
+      } else {
+        const prevCandidates = filteredTimelineMarkers.filter((m) => m.timestampSec < now - 0.8);
+        const prevMk =
+          prevCandidates.length > 0
+            ? prevCandidates[prevCandidates.length - 1]
+            : filteredTimelineMarkers[filteredTimelineMarkers.length - 1];
+        handleSelectRoundAndSeek(
+          prevMk.roundNumber,
+          prevMk.timestampSec,
+          prevMk.type === 'bookmark'
+        );
+      }
+    },
+    [currentTime, filteredTimelineMarkers, handleSelectRoundAndSeek]
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (!activeVideoUrl) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        seekTo((videoRef.current?.currentTime || 0) - 5);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        seekTo((videoRef.current?.currentTime || 0) + 5);
+      } else if (e.key === ',') {
+        e.preventDefault();
+        stepFrame(-0.1);
+      } else if (e.key === '.') {
+        e.preventDefault();
+        stepFrame(0.1);
+      } else if (e.key === '[') {
+        e.preventDefault();
+        handleSetLoopPointA();
+      } else if (e.key === ']') {
+        e.preventDefault();
+        handleSetLoopPointB();
+      } else if (e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        if (loopStartSec !== null && loopEndSec !== null && loopEndSec > loopStartSec + 0.15) {
+          setLoopEnabled((prev) => !prev);
+        }
+      } else if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        cycleZoomLevel();
+      } else if (e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        jumpRelativeMarker(1);
+      } else if (e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        jumpRelativeMarker(-1);
+      } else if (e.key.toLowerCase() === 'd') {
+        setDrawMode((prev) => !prev);
+      } else if (e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        handleAddBookmark();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    activeVideoUrl,
+    cycleZoomLevel,
+    handleAddBookmark,
+    handleSetLoopPointA,
+    handleSetLoopPointB,
+    jumpRelativeMarker,
+    loopEndSec,
+    loopStartSec,
+    seekTo,
+    stepFrame,
+    togglePlay,
+  ]);
 
   const cyclePlaybackRate = () => {
     const speeds = [0.5, 1, 1.5, 2];
@@ -716,6 +866,36 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     setCurrentShape(null);
   };
 
+  const handleViewportPanStart = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (zoomLevel <= 1) return;
+    panDragRef.current = {
+      active: true,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: panOffset.x,
+      origY: panOffset.y,
+    };
+  };
+
+  const handleViewportPanMove = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (!panDragRef.current.active || zoomLevel <= 1) return;
+    const dx = e.clientX - panDragRef.current.startX;
+    const dy = e.clientY - panDragRef.current.startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+      panDragRef.current.moved = true;
+    }
+    const maxShift = (zoomLevel - 1) * 260;
+    setPanOffset({
+      x: Math.max(-maxShift, Math.min(maxShift, panDragRef.current.origX + dx)),
+      y: Math.max(-maxShift, Math.min(maxShift, panDragRef.current.origY + dy)),
+    });
+  };
+
+  const handleViewportPanEnd = () => {
+    panDragRef.current.active = false;
+  };
+
   const handleUndoShape = () => {
     setShapesByRound((prev) => {
       const currentList = prev[selectedRound] || [];
@@ -767,7 +947,11 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
     }
   };
 
-  const getDotClass = (type: TimelineMarker['type']) => {
+  const toggleMarkerType = (type: MarkerCategory) => {
+    setVisibleMarkerTypes((prev) => ({ ...prev, [type]: !prev[type] }));
+  };
+
+  const getDotClass = (type: MarkerCategory) => {
     if (type === 'kill') return 'bg-[#10B981] ring-[#10B981]/35';
     if (type === 'death') return 'bg-[#F43F5E] ring-[#F43F5E]/35';
     if (type === 'bookmark') return 'bg-[#38BDF8] ring-[#38BDF8]/40';
@@ -775,11 +959,21 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
   };
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const hasValidLoop =
+    loopStartSec !== null && loopEndSec !== null && loopEndSec > loopStartSec + 0.15;
+  const loopLeftPct =
+    hasValidLoop && duration > 0
+      ? Math.min(100, Math.max(0, (loopStartSec / duration) * 100))
+      : 0;
+  const loopWidthPct =
+    hasValidLoop && duration > 0
+      ? Math.min(100 - loopLeftPct, Math.max(0.5, ((loopEndSec - loopStartSec) / duration) * 100))
+      : 0;
 
   return (
     <div className="space-y-4">
       <div className="theme-surface-card rounded-[4px] border border-[#232B3B] bg-[#10141C] p-4 space-y-3">
-        {/* Header & Telestrator Controls */}
+        {/* Header & Telestrator + Zoom Controls */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232B3B] pb-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <span
@@ -792,7 +986,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
             </h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             {hasSelectedMatch && (
               <>
                 <label htmlFor="highlight-file-upload" className="sr-only">
@@ -810,15 +1004,15 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   type="button"
                   disabled={uploading}
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 text-xs font-semibold text-[#EEF2F6] transition duration-150 disabled:opacity-50 active:translate-y-[1px]"
+                  className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 text-xs font-semibold text-[#EEF2F6] transition duration-150 disabled:opacity-50 active:translate-y-[1px]"
                 >
                   <UploadSimple size={14} weight="bold" aria-hidden="true" />
                   <span>
                     {uploading
                       ? tr('Uploading...', 'Đang tải lên...')
                       : activeVideoUrl
-                        ? tr('Change Highlight', 'Đổi video Highlight')
-                        : tr('Attach Highlight', 'Gắn video Highlight')}
+                        ? tr('Change Clip', 'Đổi Clip')
+                        : tr('Attach Clip', 'Gắn Clip')}
                   </span>
                 </button>
               </>
@@ -829,10 +1023,29 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 type="button"
                 onClick={onOpenHighlightsFolder}
                 title={tr('Open local highlight clips folder', 'Mở thư mục lưu clip highlight trên máy')}
-                className="inline-flex items-center gap-1.5 rounded-[2px] border border-[#232B3B] bg-[#171D28] px-2.5 py-1.5 text-xs font-medium text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B] transition duration-150"
+                className="inline-flex items-center gap-1 rounded-[2px] border border-[#232B3B] bg-[#171D28] px-2.5 py-1.5 text-xs font-medium text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B] transition duration-150"
               >
                 <FolderOpen size={14} weight="bold" aria-hidden="true" />
-                <span>{tr('Open Folder', 'Mở thư mục')}</span>
+                <span>{tr('Folder', 'Thư mục')}</span>
+              </button>
+            )}
+
+            {activeVideoUrl && (
+              <button
+                type="button"
+                onClick={cycleZoomLevel}
+                title={tr(
+                  'Digital Crosshair Zoom (Shortcut: Z, drag video to pan)',
+                  'Phóng đại soi tâm ngắm (Phím tắt: Z, kéo chuột để di chuyển vùng nhìn)'
+                )}
+                className={`inline-flex items-center gap-1 rounded-[2px] border px-2.5 py-1.5 font-mono text-xs font-bold transition duration-150 ${
+                  zoomLevel > 1
+                    ? 'bg-[#38BDF8]/15 border-[#38BDF8] text-[#38BDF8]'
+                    : 'bg-[#171D28] border-[#232B3B] text-[#94A3B8] hover:text-[#EEF2F6] hover:bg-[#232B3B]'
+                }`}
+              >
+                <MagnifyingGlassPlus size={14} weight="bold" aria-hidden="true" />
+                <span>{zoomLevel}x</span>
               </button>
             )}
 
@@ -846,7 +1059,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   'Copy current video frame + Telestrator drawings to clipboard',
                   'Chụp frame video kèm nét vẽ Telestrator vào clipboard để dán Discord'
                 )}
-                className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1.5 text-xs font-medium transition duration-150 ${
+                className={`inline-flex items-center gap-1 rounded-[2px] border px-2.5 py-1.5 text-xs font-medium transition duration-150 ${
                   copyStatus === 'copied' || copyStatus === 'downloaded'
                     ? 'bg-[#10B981]/15 border-[#10B981] text-[#10B981]'
                     : copyStatus === 'error'
@@ -857,12 +1070,12 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 <Camera size={14} weight="bold" aria-hidden="true" />
                 <span>
                   {copyStatus === 'copied'
-                    ? tr('Frame Copied', 'Đã copy ảnh')
+                    ? tr('Copied', 'Đã copy')
                     : copyStatus === 'downloaded'
                       ? tr('PNG Saved', 'Đã tải PNG')
                       : copyStatus === 'error'
-                        ? tr('Capture Failed', 'Lỗi chụp ảnh')
-                        : tr('Copy Frame', 'Copy ảnh')}
+                        ? tr('Error', 'Lỗi')
+                        : tr('Copy PNG', 'Copy ảnh')}
                 </span>
               </button>
             )}
@@ -1018,7 +1231,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
           </div>
         )}
 
-        {/* Video Viewport + Canvas */}
+        {/* Video Viewport + Zoom/Pan + Canvas */}
         {!hasSelectedMatch ? (
           <div className="aspect-video w-full rounded-[2px] border border-dashed border-[#232B3B] bg-[#0A0D12] flex flex-col items-center justify-center gap-2 p-6 text-center">
             <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
@@ -1034,8 +1247,8 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
             <VideoCamera size={28} className="text-[#64748B]" aria-hidden="true" />
             <p className="text-xs text-[#94A3B8] max-w-[55ch] leading-relaxed">
               {tr(
-                'No automatic highlight clip is attached to this match yet. Select a local video file (.mp4 / .webm) to unlock timeline combat markers, custom bookmarks, and Telestrator drawing.',
-                'Trận đấu này chưa có video highlight tự động. Chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh, dấu trang và bút vẽ chiến thuật.'
+                'No automatic highlight clip is attached to this match yet. Select a local video file (.mp4 / .webm) to unlock timeline combat markers, A-B loop, crosshair zoom, and Telestrator drawing.',
+                'Trận đấu này chưa có video highlight tự động. Chọn sẵn file video trận đấu từ máy tính để sử dụng thanh mốc giao tranh, lặp đoạn A-B, phóng đại tâm ngắm và bút vẽ chiến thuật.'
               )}
             </p>
             <button
@@ -1057,14 +1270,50 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               ref={containerRef}
               className="relative aspect-video w-full overflow-hidden rounded-[2px] border border-[#232B3B] bg-[#0A0D12]"
             >
-              <video
-                ref={videoRef}
-                src={activeVideoUrl}
-                className="h-full w-full object-contain"
-                onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-                onEnded={() => setIsPlaying(false)}
-              />
+              <div
+                style={{
+                  transform:
+                    zoomLevel > 1
+                      ? `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`
+                      : undefined,
+                  transformOrigin: 'center center',
+                }}
+                className="relative h-full w-full transition-transform duration-75"
+              >
+                <video
+                  ref={videoRef}
+                  src={activeVideoUrl}
+                  className="h-full w-full object-contain"
+                  onTimeUpdate={(e) => {
+                    const t = e.currentTarget.currentTime;
+                    if (
+                      loopEnabled &&
+                      loopStartSec !== null &&
+                      loopEndSec !== null &&
+                      loopEndSec > loopStartSec + 0.15 &&
+                      t >= loopEndSec
+                    ) {
+                      e.currentTarget.currentTime = loopStartSec;
+                      setCurrentTime(loopStartSec);
+                      return;
+                    }
+                    setCurrentTime(t);
+                  }}
+                  onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+                  onEnded={() => setIsPlaying(false)}
+                />
+
+                <canvas
+                  ref={canvasRef}
+                  onMouseDown={handlePointerDown}
+                  onMouseMove={handlePointerMove}
+                  onMouseUp={handlePointerUp}
+                  onMouseLeave={handlePointerUp}
+                  className={`absolute inset-0 h-full w-full ${
+                    drawMode ? 'cursor-crosshair pointer-events-auto' : 'pointer-events-none'
+                  }`}
+                />
+              </div>
 
               {!drawMode && (
                 <button
@@ -1074,21 +1323,55 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                       ? tr('Pause replay video', 'Tạm dừng video replay')
                       : tr('Play replay video', 'Phát video replay')
                   }
-                  onClick={togglePlay}
-                  className="absolute inset-0 h-full w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#38BDF8]"
+                  onMouseDown={handleViewportPanStart}
+                  onMouseMove={handleViewportPanMove}
+                  onMouseUp={handleViewportPanEnd}
+                  onMouseLeave={handleViewportPanEnd}
+                  onClick={() => {
+                    if (panDragRef.current.moved) {
+                      panDragRef.current.moved = false;
+                      return;
+                    }
+                    togglePlay();
+                  }}
+                  onDoubleClick={() => {
+                    if (zoomLevel > 1) {
+                      setZoomLevel(1);
+                      setPanOffset({ x: 0, y: 0 });
+                    }
+                  }}
+                  className={`absolute inset-0 h-full w-full bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#38BDF8] ${
+                    zoomLevel > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                  }`}
                 />
               )}
 
-              <canvas
-                ref={canvasRef}
-                onMouseDown={handlePointerDown}
-                onMouseMove={handlePointerMove}
-                onMouseUp={handlePointerUp}
-                onMouseLeave={handlePointerUp}
-                className={`absolute inset-0 h-full w-full ${
-                  drawMode ? 'cursor-crosshair pointer-events-auto' : 'pointer-events-none'
-                }`}
-              />
+              {zoomLevel > 1 && (
+                <div className="absolute top-2.5 left-3 z-10 flex items-center gap-2 rounded-[2px] bg-[#0A0D12]/85 border border-[#38BDF8]/40 px-2 py-0.5 font-mono text-[10px] text-[#38BDF8]">
+                  <span>
+                    {tr(
+                      `ZOOM ${zoomLevel}x - Drag to pan`,
+                      `ZOOM ${zoomLevel}x - Kéo chuột để di chuyển`
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setZoomLevel(1);
+                      setPanOffset({ x: 0, y: 0 });
+                    }}
+                    className="underline text-[#EEF2F6] hover:text-[#38BDF8]"
+                  >
+                    {tr('Reset', 'Về 1x')}
+                  </button>
+                </div>
+              )}
+
+              {loopEnabled && hasValidLoop && (
+                <div className="pointer-events-none absolute top-2.5 right-3 z-10 rounded-[2px] bg-[#0A0D12]/85 border border-[#10B981]/45 px-2 py-0.5 font-mono text-[10px] font-bold text-[#10B981]">
+                  LOOP {formatTime(loopStartSec)} - {formatTime(loopEndSec)}
+                </div>
+              )}
 
               <span className="pointer-events-none absolute top-2 left-2 h-2.5 w-2.5 border-t border-l border-[#94A3B8]/40" />
               <span className="pointer-events-none absolute top-2 right-2 h-2.5 w-2.5 border-t border-r border-[#94A3B8]/40" />
@@ -1096,7 +1379,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
               <span className="pointer-events-none absolute bottom-2 right-2 h-2.5 w-2.5 border-b border-r border-[#94A3B8]/40" />
             </div>
 
-            {/* Scrubber Timeline + Markers */}
+            {/* Scrubber Timeline + Loop Region + Filtered Markers */}
             <div className="pt-1 space-y-2.5">
               <div className="relative flex h-6 items-center">
                 {hoveredMarker && (
@@ -1117,7 +1400,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                   </div>
                 )}
 
-                <div className="relative h-2 w-full rounded-[1px] bg-[#171D28] border border-[#232B3B]">
+                <div className="relative h-2.5 w-full rounded-[1px] bg-[#171D28] border border-[#232B3B]">
                   <button
                     type="button"
                     aria-label={tr('Seek replay timeline', 'Tua thời gian phát video')}
@@ -1136,8 +1419,19 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     }`}
                   />
 
+                  {hasValidLoop && duration > 0 && (
+                    <div
+                      style={{ left: `${loopLeftPct}%`, width: `${loopWidthPct}%` }}
+                      className={`pointer-events-none absolute inset-y-0 border-x-2 ${
+                        loopEnabled
+                          ? 'bg-[#10B981]/30 border-[#10B981]'
+                          : 'bg-[#38BDF8]/20 border-[#38BDF8]'
+                      }`}
+                    />
+                  )}
+
                   {duration > 0 &&
-                    timelineMarkers.map((mk) => {
+                    filteredTimelineMarkers.map((mk) => {
                       const leftPct = Math.min(
                         100,
                         Math.max(0, (mk.timestampSec / duration) * 100)
@@ -1167,14 +1461,14 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                 </div>
               </div>
 
-              {/* Playback & Frame-Step Controls */}
+              {/* Playback, Frame-Step, Event Jump & A-B Loop Controls */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#94A3B8]">
-                <div className="flex flex-wrap items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1">
                   <button
                     type="button"
                     onClick={togglePlay}
                     title={tr('Shortcut: Space', 'Phím tắt: Space')}
-                    className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-3 py-1.5 font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
+                    className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-semibold text-[#EEF2F6] transition duration-150 active:translate-y-[1px]"
                   >
                     {isPlaying ? (
                       <Pause size={13} weight="bold" aria-hidden="true" />
@@ -1186,11 +1480,22 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
 
                   <button
                     type="button"
+                    onClick={() => jumpRelativeMarker(-1)}
+                    disabled={filteredTimelineMarkers.length === 0}
+                    aria-label={tr('Previous combat event (P)', 'Mốc sự kiện trước (P)')}
+                    title={tr('Previous event marker (Shortcut: P)', 'Nhảy về mốc trước (Phím P)')}
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] p-1.5 hover:text-[#EEF2F6] disabled:opacity-40"
+                  >
+                    <SkipBack size={13} weight="bold" aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => seekTo(currentTime - 5)}
                     title={tr('Back 5s (Left Arrow)', 'Lùi 5 giây (Mũi tên trái)')}
-                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono hover:text-[#EEF2F6]"
+                    className="inline-flex items-center gap-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
                   >
-                    <Rewind size={12} weight="bold" aria-hidden="true" />
+                    <Rewind size={11} weight="bold" aria-hidden="true" />
                     <span>5s</span>
                   </button>
 
@@ -1198,7 +1503,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     type="button"
                     onClick={() => stepFrame(-0.1)}
                     title={tr('Previous frame -0.1s (,)', 'Lùi từng khung hình -0.1s (phím ,)')}
-                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-1.5 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
                   >
                     -0.1s
                   </button>
@@ -1207,7 +1512,7 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     type="button"
                     onClick={() => stepFrame(0.1)}
                     title={tr('Next frame +0.1s (.)', 'Tiến từng khung hình +0.1s (phím .)')}
-                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-1.5 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
                   >
                     +0.1s
                   </button>
@@ -1216,42 +1521,135 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     type="button"
                     onClick={() => seekTo(currentTime + 5)}
                     title={tr('Forward 5s (Right Arrow)', 'Tiến 5 giây (Mũi tên phải)')}
-                    className="inline-flex items-center gap-1 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono hover:text-[#EEF2F6]"
+                    className="inline-flex items-center gap-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] hover:text-[#EEF2F6]"
                   >
                     <span>5s</span>
-                    <FastForward size={12} weight="bold" aria-hidden="true" />
+                    <FastForward size={11} weight="bold" aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpRelativeMarker(1)}
+                    disabled={filteredTimelineMarkers.length === 0}
+                    aria-label={tr('Next combat event (N)', 'Mốc sự kiện kế tiếp (N)')}
+                    title={tr('Next event marker (Shortcut: N)', 'Nhảy tới mốc tiếp theo (Phím N)')}
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] p-1.5 hover:text-[#EEF2F6] disabled:opacity-40"
+                  >
+                    <SkipForward size={13} weight="bold" aria-hidden="true" />
                   </button>
 
                   <button
                     type="button"
                     onClick={cyclePlaybackRate}
                     title={tr('Cycle playback speed', 'Đổi tốc độ phát')}
-                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2.5 py-1.5 font-mono text-[#EEF2F6] tabular-nums"
+                    className="rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] px-2 py-1.5 font-mono text-[11px] text-[#EEF2F6] tabular-nums"
                   >
                     {playbackRate}x
                   </button>
 
-                  <span className="ml-1 font-mono text-[#94A3B8] tabular-nums">
+                  {/* A-B Segment Loop Group */}
+                  <div
+                    role="group"
+                    aria-label={tr('A-B segment loop controls', 'Điều khiển lặp đoạn A-B')}
+                    className="inline-flex items-center rounded-[2px] bg-[#0A0D12] border border-[#232B3B] font-mono text-[10px]"
+                  >
+                    <button
+                      type="button"
+                      onClick={handleSetLoopPointA}
+                      title={tr('Set Loop Start A (Shortcut: [)', 'Đặt điểm đầu A (Phím [)')}
+                      className={`px-1.5 py-1.5 hover:text-[#EEF2F6] ${
+                        loopStartSec !== null ? 'text-[#38BDF8] font-bold' : 'text-[#94A3B8]'
+                      }`}
+                    >
+                      [A{loopStartSec !== null ? ` ${formatTime(loopStartSec)}` : ''}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSetLoopPointB}
+                      title={tr('Set Loop End B (Shortcut: ])', 'Đặt điểm cuối B (Phím ])')}
+                      className={`px-1.5 py-1.5 border-l border-[#232B3B] hover:text-[#EEF2F6] ${
+                        loopEndSec !== null ? 'text-[#38BDF8] font-bold' : 'text-[#94A3B8]'
+                      }`}
+                    >
+                      B]{loopEndSec !== null ? ` ${formatTime(loopEndSec)}` : ''}
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={loopEnabled}
+                      disabled={!hasValidLoop}
+                      onClick={() => setLoopEnabled((prev) => !prev)}
+                      title={tr('Toggle A-B Loop (Shortcut: L)', 'Bật/Tắt lặp đoạn A-B (Phím L)')}
+                      className={`inline-flex items-center gap-1 px-1.5 py-1.5 border-l border-[#232B3B] disabled:opacity-40 ${
+                        loopEnabled ? 'bg-[#10B981]/20 text-[#10B981] font-bold' : 'text-[#94A3B8]'
+                      }`}
+                    >
+                      <Repeat size={11} weight="bold" aria-hidden="true" />
+                    </button>
+                    {(loopStartSec !== null || loopEndSec !== null) && (
+                      <button
+                        type="button"
+                        aria-label={tr('Clear A-B loop', 'Xóa đoạn lặp A-B')}
+                        onClick={handleClearLoop}
+                        className="px-1.5 py-1.5 border-l border-[#232B3B] text-[#64748B] hover:text-[#F43F5E]"
+                      >
+                        <X size={10} weight="bold" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+
+                  <span className="ml-1 font-mono text-[11px] text-[#94A3B8] tabular-nums">
                     {formatTime(currentTime)} / {formatTime(duration)}
                   </span>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[#94A3B8]">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#10B981]" /> {tr('Kill', 'Có Kill')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#F43F5E]" />{' '}
-                    {tr('Death', 'Bị hạ gục')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#E59A23]" />{' '}
-                    {tr('Round / Zone', 'Thắng / Bo')}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-[#38BDF8]" />{' '}
-                    {tr('Bookmark', 'Dấu trang')}
-                  </span>
+                {/* Interactive Marker Filter Pills */}
+                <div
+                  role="group"
+                  aria-label={tr('Filter timeline event markers', 'Lọc các mốc sự kiện trên thanh thời gian')}
+                  className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]"
+                >
+                  {(
+                    [
+                      {
+                        type: 'kill' as const,
+                        dot: 'bg-[#10B981]',
+                        label: tr('Kills', 'Có Kill'),
+                      },
+                      {
+                        type: 'death' as const,
+                        dot: 'bg-[#F43F5E]',
+                        label: tr('Deaths', 'Bị hạ'),
+                      },
+                      {
+                        type: 'objective' as const,
+                        dot: 'bg-[#E59A23]',
+                        label: tr('Round/Zone', 'Round/Bo'),
+                      },
+                      {
+                        type: 'bookmark' as const,
+                        dot: 'bg-[#38BDF8]',
+                        label: tr('Marks', 'Dấu trang'),
+                      },
+                    ]
+                  ).map((item) => {
+                    const active = visibleMarkerTypes[item.type];
+                    return (
+                      <button
+                        key={item.type}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => toggleMarkerType(item.type)}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] border transition duration-150 ${
+                          active
+                            ? 'bg-[#171D28] border-[#232B3B] text-[#EEF2F6]'
+                            : 'bg-[#0A0D12] border-[#232B3B]/50 text-[#64748B] line-through opacity-60'
+                        }`}
+                      >
+                        <span className={`h-2 w-2 rounded-full ${item.dot}`} />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1267,8 +1665,8 @@ export const ReplayPlayer: React.FC<ReplayPlayerProps> = ({
                     {bookmarks.length === 0 ? (
                       <span className="text-[11px] text-[#64748B]">
                         {tr(
-                          'Press B or click + Mark to save key replay moments.',
-                          'Bấm phím B hoặc nút + Lưu mốc để đánh dấu pha quan trọng.'
+                          'Press B to bookmark moments, or [ / ] to loop a gunfight.',
+                          'Bấm B để gắn dấu trang, hoặc phím [ / ] để lặp lại pha đấu súng.'
                         )}
                       </span>
                     ) : (
