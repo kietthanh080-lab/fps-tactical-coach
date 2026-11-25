@@ -1,7 +1,6 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import {
   Crosshair,
-  Fire,
   MapTrifold,
   Pause,
   Play,
@@ -26,9 +25,6 @@ export const PubgMinimapPanel: React.FC<PubgMinimapPanelProps> = ({
   const uid = useId().replace(/:/g, '');
   const [hoveredInfo, setHoveredInfo] = useState<string | null>(null);
   const [showAllZones, setShowAllZones] = useState(true);
-  // Inspired by ZeroDaylight0/PUBG-tracker & YORZ/PUBG-heatmap-frontend:
-  // Animated 2D route scrubber + Combat Heatmap overlay
-  const [showHeatmap, setShowHeatmap] = useState(false);
   const [scrubPct, setScrubPct] = useState<number>(100);
   const [isPlayingRoute, setIsPlayingRoute] = useState(false);
 
@@ -137,19 +133,6 @@ export const PubgMinimapPanel: React.FC<PubgMinimapPanelProps> = ({
         <div className="flex items-center gap-1">
           <button
             type="button"
-            aria-pressed={showHeatmap}
-            onClick={() => setShowHeatmap((prev) => !prev)}
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[2px] border font-mono text-[10px] font-bold transition ${
-              showHeatmap
-                ? 'bg-[#FF4655]/20 border-[#FF4655]/50 text-[#FF4655]'
-                : 'bg-[#171D28] hover:bg-[#232B3B] border-[#232B3B] text-[#94A3B8]'
-            }`}
-          >
-            <Fire size={11} weight="fill" aria-hidden="true" />
-            <span>{tr('Heatmap', 'Bản đồ nhiệt')}</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setShowAllZones((prev) => !prev)}
             className="px-2 py-0.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] font-mono text-[10px] text-[#94A3B8]"
           >
@@ -166,68 +149,16 @@ export const PubgMinimapPanel: React.FC<PubgMinimapPanelProps> = ({
           className="w-full h-auto block select-none"
           role="img"
           aria-label={tr(
-            `2D movement path, heatmap, and safe zone map for ${mapName}`,
-            `Bản đồ 2D đường di chuyển, nhiệt độ giao tranh và vòng bo trận ${mapName}`
+            `2D movement path and safe zone map for ${mapName}`,
+            `Bản đồ 2D đường di chuyển và vòng bo trận ${mapName}`
           )}
         >
-          <defs>
-            <radialGradient id={`heat-kill-${uid}`} cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#10B981" stopOpacity="0.55" />
-              <stop offset="50%" stopColor="#E59A23" stopOpacity="0.28" />
-              <stop offset="100%" stopColor="#E59A23" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id={`heat-death-${uid}`} cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#FF4655" stopOpacity="0.65" />
-              <stop offset="55%" stopColor="#F43F5E" stopOpacity="0.28" />
-              <stop offset="100%" stopColor="#FF4655" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id={`heat-dwell-${uid}`} cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="#38BDF8" stopOpacity="0" />
-            </radialGradient>
-          </defs>
-
           {[50, 100, 150, 200, 250, 300, 350].map((pos) => (
             <React.Fragment key={pos}>
               <line x1={pos} y1={0} x2={pos} y2={400} stroke="#1B2332" strokeWidth={0.8} />
               <line x1={0} y1={pos} x2={400} y2={pos} stroke="#1B2332" strokeWidth={0.8} />
             </React.Fragment>
           ))}
-
-          {/* Combat & Dwell Heatmap Layer */}
-          {showHeatmap && (
-            <g pointerEvents="none">
-              {slicedPath
-                .filter((_, idx) => idx % 3 === 0)
-                .map((pt, idx) => (
-                  <circle
-                    key={`dw-${idx}`}
-                    cx={pt.x * scale}
-                    cy={pt.y * scale}
-                    r={22}
-                    fill={`url(#heat-dwell-${uid})`}
-                  />
-                ))}
-              {telemetry.kills.map((k, idx) => (
-                <circle
-                  key={`hk-${idx}`}
-                  cx={k.x * scale}
-                  cy={k.y * scale}
-                  r={34}
-                  fill={`url(#heat-kill-${uid})`}
-                />
-              ))}
-              {telemetry.deaths.map((d, idx) => (
-                <circle
-                  key={`hd-${idx}`}
-                  cx={d.x * scale}
-                  cy={d.y * scale}
-                  r={38}
-                  fill={`url(#heat-death-${uid})`}
-                />
-              ))}
-            </g>
-          )}
 
           {visibleZones.map((z) => (
             <circle

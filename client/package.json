@@ -1,7 +1,7 @@
 {
   "name": "fps-tactical-coach-client",
   "private": true,
-  "version": "1.8.0",
+  "version": "1.8.1",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",

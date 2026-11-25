@@ -10,7 +10,7 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   define: {
-    __APP_VERSION__: JSON.stringify(clientPkg.version || '1.8.0'),
+    __APP_VERSION__: JSON.stringify(clientPkg.version || '1.8.1'),
   },
   build: {
     outDir: 'dist',

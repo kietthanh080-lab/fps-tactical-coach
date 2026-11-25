@@ -693,8 +693,8 @@ export const TacticalReport: React.FC<TacticalReportProps> = ({
                   >
                     <span>
                       {tr(
-                        `2D ZONE & HEATMAP (${mapName || 'PUBG'})`,
-                        `SƠ ĐỒ 2D BO & NHIỆT ĐỘ (${mapName || 'PUBG'})`
+                        `2D ZONE & ROTATION MAP (${mapName || 'PUBG'})`,
+                        `SƠ ĐỒ 2D BO & DI CHUYỂN (${mapName || 'PUBG'})`
                       )}
                     </span>
                     <span className="text-[11px] text-[#94A3B8]">
