@@ -280,7 +280,7 @@ const UpdateBanner: React.FC = () => {
   );
 };
 
-const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.9.0';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.9.1';
 
 const AppFooterVersion: React.FC<{
   isElectronRuntime?: boolean;

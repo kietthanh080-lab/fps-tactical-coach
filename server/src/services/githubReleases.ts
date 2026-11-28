@@ -17,6 +17,20 @@ const CACHE_TTL_MS = 60 * 1000;
 
 const FALLBACK_RELEASES: ReleaseEntry[] = [
   {
+    tag: 'v1.9.1',
+    version: '1.9.1',
+    name: 'TacticalReplayAI v1.9.1',
+    publishedAt: '2026-11-28T17:20:00Z',
+    htmlUrl: `https://github.com/${RELEASES_REPO}/releases/tag/v1.9.1`,
+    downloadUrl: `https://github.com/${RELEASES_REPO}/releases/download/v1.9.1/TacticalReplayAI-Setup-1.9.1.exe`,
+    fileName: 'TacticalReplayAI-Setup-1.9.1.exe',
+    sizeMb: '125.5 MB',
+    body: [
+      '### Fixes',
+      '- **True One-Click Silent Windows Updates**: Switched the Windows NSIS package to `oneClick: true` (per-user in-place upgrade) so clicking **Restart Now** updates silently and immediately relaunches TacticalReplayAI without ever showing the `Choose Installation Options` setup wizard (even when upgrading directly from v1.8.1).',
+    ].join('\n'),
+  },
+  {
     tag: 'v1.9.0',
     version: '1.9.0',
     name: 'TacticalReplayAI v1.9.0',
