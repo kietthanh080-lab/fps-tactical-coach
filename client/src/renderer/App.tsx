@@ -19,7 +19,6 @@ import {
   ShieldCheck,
   SignOut,
   SlidersHorizontal,
-  Strategy,
   TrendDown,
   TrendUp,
   Trophy,
@@ -72,7 +71,6 @@ import { MatchReportUI, TacticalReport } from './components/TacticalReport';
 import { FriendsLeaderboard } from './components/FriendsLeaderboard';
 import { PostMatchRecapToast } from './components/PostMatchRecapToast';
 import { MatchTrendModal } from './components/MatchTrendModal';
-import { TacticalBoardModal } from './components/TacticalBoardModal';
 import { SettingsTabId, UnifiedSettingsModal } from './components/UnifiedSettingsModal';
 
 interface UserProfile {
@@ -161,63 +159,128 @@ const UpdateBanner: React.FC = () => {
   const { tr } = useI18n();
   const [updateState, setUpdateState] = useState<{
     status: 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
-    version?: string;
+    version?: string | null;
     percent?: number;
   }>({ status: 'idle' });
+  const [dismissedForSession, setDismissedForSession] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     const updater = (window as any).electronUpdater;
-    if (!updater?.onUpdateStatus) return;
-    return updater.onUpdateStatus((data: any) => setUpdateState(data));
+    if (!updater) return;
+
+    if (updater.getUpdateStatus) {
+      void updater
+        .getUpdateStatus()
+        .then((initial: any) => {
+          if (initial && initial.status && initial.status !== 'idle') {
+            setUpdateState(initial);
+          }
+        })
+        .catch(() => {});
+    }
+
+    if (!updater.onUpdateStatus) return;
+    return updater.onUpdateStatus((data: any) => {
+      setUpdateState(data);
+      if (data?.status === 'downloaded') {
+        setDismissedForSession(false);
+      }
+    });
   }, []);
 
-  if (updateState.status === 'idle' || updateState.status === 'error') return null;
+  if (
+    dismissedForSession ||
+    updateState.status === 'idle' ||
+    updateState.status === 'error'
+  ) {
+    return null;
+  }
+
+  const verText = updateState.version ? `v${updateState.version}` : '';
+  const pct = Math.max(0, Math.min(100, updateState.percent ?? 0));
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 bg-[#10141C] border border-[#10B981]/50 text-[#EEF2F6] px-4 py-3 rounded-[4px] shadow-2xl flex items-center gap-3">
-      {updateState.status === 'available' && (
-        <>
-          <span className="text-xs font-mono">
-            {tr('New version', 'Phiên bản mới')}{' '}
-            <b className="text-[#10B981]">v{updateState.version}</b>{' '}
-            {tr('is ready', 'sẵn sàng')}
-          </span>
-          <button
-            type="button"
-            onClick={() => (window as any).electronUpdater?.downloadUpdate()}
-            className="bg-[#10B981] hover:bg-emerald-400 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
-          >
-            {tr('Update Now', 'Cập nhật ngay')}
-          </button>
-        </>
-      )}
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed top-4 right-4 z-50 w-[min(92vw,420px)] bg-[#10141C] border border-[#10B981]/60 text-[#EEF2F6] p-3.5 rounded-[4px] shadow-2xl space-y-2.5"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <p className="font-mono text-xs font-bold text-[#10B981]">
+            {updateState.status === 'downloaded'
+              ? tr(
+                  `New Update ${verText} Ready`,
+                  `Bản cập nhật ${verText} đã sẵn sàng`
+                )
+              : tr(
+                  `New Update ${verText} Detected`,
+                  `Phát hiện phiên bản mới ${verText}`
+                )}
+          </p>
+          <p className="text-xs text-[#94A3B8] leading-relaxed">
+            {updateState.status === 'downloaded'
+              ? tr(
+                  'Downloaded in background. Click Restart Now to update automatically without reinstalling.',
+                  'Đã tự tải ngầm xong. Chỉ cần bấm Khởi động lại ngay để áp dụng, không cần cài lại.'
+                )
+              : tr(
+                  `Downloading update in background... ${pct}%`,
+                  `Đang tự động tải ngầm bản cập nhật... ${pct}%`
+                )}
+          </p>
+        </div>
 
-      {updateState.status === 'downloading' && (
-        <span className="text-xs font-mono text-[#38BDF8] tabular-nums">
-          {tr('Downloading update...', 'Đang tải bản cập nhật...')}{' '}
-          <b>{updateState.percent ?? 0}%</b>
-        </span>
+        <button
+          type="button"
+          aria-label={tr('Hide update banner temporarily', 'Ẩn tạm thông báo cập nhật')}
+          onClick={() => setDismissedForSession(true)}
+          className="p-1 text-[#64748B] hover:text-[#EEF2F6] transition"
+        >
+          <X size={13} weight="bold" aria-hidden="true" />
+        </button>
+      </div>
+
+      {(updateState.status === 'available' || updateState.status === 'downloading') && (
+        <div className="h-1.5 w-full rounded-[1px] bg-[#171D28] overflow-hidden">
+          <div
+            style={{ width: `${Math.max(6, pct)}%` }}
+            className="h-full bg-[#38BDF8] transition-all duration-200"
+          />
+        </div>
       )}
 
       {updateState.status === 'downloaded' && (
-        <>
-          <span className="text-xs font-mono">
-            {tr('Update ready to install', 'Tải hoàn tất')}
-          </span>
+        <div className="flex items-center justify-end gap-2 pt-0.5">
           <button
             type="button"
-            onClick={() => (window as any).electronUpdater?.installUpdate()}
-            className="bg-[#38BDF8] hover:bg-sky-300 text-[#0A0D12] font-bold text-xs px-3 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
+            disabled={restarting}
+            onClick={() => {
+              setRestarting(true);
+              void (window as any).electronUpdater?.installUpdate();
+            }}
+            className="inline-flex items-center gap-1.5 bg-[#10B981] hover:bg-emerald-400 disabled:opacity-60 text-[#0A0D12] font-bold text-xs px-3.5 py-1.5 rounded-[2px] transition duration-150 active:translate-y-[1px]"
           >
-            {tr('Restart App', 'Khởi động lại')}
+            <ArrowsClockwise
+              size={13}
+              weight="bold"
+              className={restarting ? 'animate-spin' : ''}
+              aria-hidden="true"
+            />
+            <span>
+              {restarting
+                ? tr('Restarting...', 'Đang khởi động lại...')
+                : tr('Restart Now', 'Khởi động lại ngay')}
+            </span>
           </button>
-        </>
+        </div>
       )}
     </div>
   );
 };
 
-const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.8.1';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.9.0';
 
 const AppFooterVersion: React.FC<{
   isElectronRuntime?: boolean;
@@ -426,8 +489,6 @@ const AppContent: React.FC<AppContentProps> = ({
   const isOverwolfRuntime =
     typeof overwolf !== 'undefined' && Boolean(overwolf.media?.replays || overwolf.streaming);
 
-  const [showTacticalBoard, setShowTacticalBoard] = useState(false);
-
   const openSettingsAt = useCallback((tab: SettingsTabId = 'GENERAL') => {
     setSettingsInitialTab(tab);
     setShowUnifiedSettings(true);
@@ -439,9 +500,6 @@ const AppContent: React.FC<AppContentProps> = ({
         e.preventDefault();
         setSettingsInitialTab('GENERAL');
         setShowUnifiedSettings((prev) => !prev);
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-        e.preventDefault();
-        setShowTacticalBoard((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onGlobalKey);
@@ -1577,16 +1635,6 @@ const AppContent: React.FC<AppContentProps> = ({
 
               <button
                 type="button"
-                onClick={() => setShowTacticalBoard(true)}
-                title={tr('2D Strategy Board (Ctrl+B)', 'Sa bàn chiến thuật 2D (Ctrl+B)')}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#38BDF8] transition duration-150"
-              >
-                <Strategy size={14} weight="bold" aria-hidden="true" />
-                <span>{tr('Strat Board', 'Sa bàn 2D')}</span>
-              </button>
-
-              <button
-                type="button"
                 onClick={() => openSettingsAt('GENERAL')}
                 title={tr('Settings (Ctrl+,)', 'Cài đặt (Ctrl+,)')}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#EEF2F6] transition duration-150"
@@ -1917,12 +1965,6 @@ const AppContent: React.FC<AppContentProps> = ({
           isElectronRuntime={isElectronRuntime}
           onOpenSettings={() => openSettingsAt('GENERAL')}
         />
-        <TacticalBoardModal
-          isOpen={showTacticalBoard}
-          initialGame={searchGame}
-          dataRevision={dataRevision}
-          onClose={() => setShowTacticalBoard(false)}
-        />
         {sharedSettingsModal}
         <UpdateBanner />
       </div>
@@ -2067,16 +2109,6 @@ const AppContent: React.FC<AppContentProps> = ({
             >
               <ChartBar size={14} weight="bold" aria-hidden="true" />
               <span>{tr('20-Match Form', 'Phong độ 20 trận')}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowTacticalBoard(true)}
-              title={tr('Interactive 2D Strategy & Callout Board (Ctrl+B)', 'Sa bàn Chiến thuật & Callout 2D (Ctrl+B)')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#171D28] hover:bg-[#232B3B] border border-[#232B3B] text-xs font-semibold text-[#E59A23] transition duration-150 active:translate-y-[1px]"
-            >
-              <Strategy size={14} weight="bold" aria-hidden="true" />
-              <span>{tr('Strat Board', 'Sa bàn 2D')}</span>
             </button>
 
             <button
@@ -2881,14 +2913,6 @@ const AppContent: React.FC<AppContentProps> = ({
         gameType={activeGameTab}
         matches={tabBaseVideos.slice(0, 20)}
         onClose={() => setShowTrendModal(false)}
-      />
-
-      <TacticalBoardModal
-        isOpen={showTacticalBoard}
-        initialGame={activeGameTab}
-        initialMapName={activeMatch?.map_name || ''}
-        dataRevision={dataRevision}
-        onClose={() => setShowTacticalBoard(false)}
       />
 
       {sharedSettingsModal}

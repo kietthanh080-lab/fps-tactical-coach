@@ -16,7 +16,9 @@ const fs = require('fs');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
-autoUpdater.autoDownload = false; // Cho nguoi dung bam nut moi tai
+autoUpdater.autoDownload = true; // Tu dong tai ngam ngay khi phat hien ban moi
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.disableWebInstaller = true;
 
 // Dang ky giao thuc deep-link tacticalreplay:// tren Windows
 if (process.defaultApp) {
@@ -33,6 +35,15 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let gameWatcherTimer = null;
+let updateCheckTimer = null;
+let lastUpdateCheckMs = 0;
+let isCheckingForUpdate = false;
+let currentUpdateState = {
+  status: 'idle',
+  version: null,
+  percent: 0,
+  message: null,
+};
 let isCheckingProcesses = false;
 const startHidden = process.argv.includes('--hidden');
 
@@ -460,6 +471,8 @@ function showMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
+  broadcastUpdateState();
+  void triggerAutoUpdateCheck(false);
 }
 
 function refreshTrayMenu() {
@@ -506,10 +519,17 @@ function refreshTrayMenu() {
       },
     },
     {
-      label: 'Kiểm tra bản cập nhật',
+      label:
+        currentUpdateState.status === 'downloaded'
+          ? `Khởi động lại để cập nhật v${currentUpdateState.version || 'mới'}`
+          : 'Kiểm tra bản cập nhật',
       click: () => {
+        if (currentUpdateState.status === 'downloaded') {
+          performSilentQuitAndInstall();
+          return;
+        }
         showMainWindow();
-        if (app.isPackaged) autoUpdater.checkForUpdates();
+        void triggerAutoUpdateCheck(true);
       },
     },
     { type: 'separator' },
@@ -550,58 +570,141 @@ if (!gotTheLock) {
   });
 }
 
+function broadcastUpdateState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { ...currentUpdateState });
+  }
+}
+
+function performSilentQuitAndInstall() {
+  isQuitting = true;
+  try {
+    globalShortcut.unregisterAll();
+  } catch {
+    // Bo qua
+  }
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  // isSilent = true (/S - khong hien bang chon cai dat NSIS), isForceRunAfter = true (--force-run - tu mo lai app)
+  setImmediate(() => {
+    autoUpdater.quitAndInstall(true, true);
+  });
+}
+
+async function triggerAutoUpdateCheck(force = false) {
+  if (!app.isPackaged || isCheckingForUpdate) {
+    broadcastUpdateState();
+    return currentUpdateState;
+  }
+  if (
+    !force &&
+    (currentUpdateState.status === 'downloading' || currentUpdateState.status === 'downloaded')
+  ) {
+    broadcastUpdateState();
+    return currentUpdateState;
+  }
+  const now = Date.now();
+  if (!force && now - lastUpdateCheckMs < 45000) {
+    broadcastUpdateState();
+    return currentUpdateState;
+  }
+
+  isCheckingForUpdate = true;
+  lastUpdateCheckMs = now;
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    currentUpdateState = {
+      status: 'error',
+      version: currentUpdateState.version,
+      percent: 0,
+      message: err?.message || 'Update check failed',
+    };
+    broadcastUpdateState();
+  } finally {
+    isCheckingForUpdate = false;
+  }
+  return currentUpdateState;
+}
+
 function setupAutoUpdater() {
+  require('electron').autoUpdater?.on?.('before-quit-for-update', () => {
+    isQuitting = true;
+  });
+
   autoUpdater.on('update-available', (info) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', {
-        status: 'available',
-        version: info.version,
-      });
-    }
+    currentUpdateState = {
+      status: 'available',
+      version: info?.version || null,
+      percent: 0,
+      message: null,
+    };
+    broadcastUpdateState();
   });
 
   autoUpdater.on('download-progress', (progress) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', {
-        status: 'downloading',
-        percent: Math.round(progress.percent),
-      });
-    }
+    currentUpdateState = {
+      status: 'downloading',
+      version: currentUpdateState.version,
+      percent: Math.round(progress?.percent || 0),
+      message: null,
+    };
+    broadcastUpdateState();
   });
 
-  autoUpdater.on('update-downloaded', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', {
-        status: 'downloaded',
-      });
+  autoUpdater.on('update-downloaded', (info) => {
+    const readyVer = info?.version || currentUpdateState.version;
+    currentUpdateState = {
+      status: 'downloaded',
+      version: readyVer,
+      percent: 100,
+      message: null,
+    };
+    refreshTrayMenu();
+    broadcastUpdateState();
+
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+      showDesktopNotification(
+        `TacticalReplayAI v${readyVer || ''} Ready`,
+        'Update downloaded in background. Open the app and click Restart Now to apply.'
+      );
     }
   });
 
   autoUpdater.on('error', (err) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', {
-        status: 'error',
-        message: err.message,
-      });
-    }
+    currentUpdateState = {
+      status: 'error',
+      version: currentUpdateState.version,
+      percent: 0,
+      message: err?.message || 'Update error',
+    };
+    broadcastUpdateState();
   });
 }
 
+ipcMain.handle('get-update-status', () => {
+  return { ...currentUpdateState };
+});
+
 ipcMain.handle('check-for-updates', async () => {
   if (!app.isPackaged) {
-    return { ok: true, packaged: false };
+    return { ok: true, packaged: false, state: currentUpdateState };
   }
-  await autoUpdater.checkForUpdates();
-  return { ok: true, packaged: true };
+  const state = await triggerAutoUpdateCheck(true);
+  return { ok: true, packaged: true, state };
 });
 
 ipcMain.handle('start-download-update', () => {
-  autoUpdater.downloadUpdate();
+  if (app.isPackaged) {
+    void autoUpdater.downloadUpdate();
+  }
 });
 
 ipcMain.handle('install-update-now', () => {
-  isQuitting = true;
-  autoUpdater.quitAndInstall();
+  performSilentQuitAndInstall();
+  return { installing: true };
 });
 
 ipcMain.handle('shell:open-external', async (_event, url) => {
@@ -1177,11 +1280,10 @@ function createMainWindow(forceShow = false) {
     }
   });
 
-  setTimeout(() => {
-    if (app.isPackaged) {
-      autoUpdater.checkForUpdates();
-    }
-  }, 3000);
+  win.webContents.on('did-finish-load', () => {
+    broadcastUpdateState();
+    void triggerAutoUpdateCheck(false);
+  });
 }
 
 app.on('before-quit', () => {
@@ -1190,6 +1292,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   if (gameWatcherTimer) clearInterval(gameWatcherTimer);
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
   try {
     globalShortcut.unregisterAll();
   } catch {
@@ -1206,6 +1309,9 @@ app.whenReady().then(async () => {
   createMainWindow(false);
   syncHotkeyRegistration();
   startGameWatcher();
+  updateCheckTimer = setInterval(() => {
+    void triggerAutoUpdateCheck(false);
+  }, 30 * 60 * 1000);
 
   app.on('activate', () => {
     showMainWindow();

@@ -921,10 +921,6 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
                         <span className="text-[#94A3B8]">{tr('Prev / Next Event', 'Nhảy mốc trước / sau')}</span>
                         <kbd className="text-[#EEF2F6] font-bold">P / N</kbd>
                       </div>
-                      <div className="flex justify-between px-2.5 py-1 rounded-[2px] bg-[#10141C] border border-[#232B3B]">
-                        <span className="text-[#94A3B8]">{tr('2D Strategy Board', 'Mở Sa bàn 2D')}</span>
-                        <kbd className="text-[#EEF2F6] font-bold">Ctrl+B</kbd>
-                      </div>
                     </div>
                   </div>
                 </div>

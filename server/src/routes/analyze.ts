@@ -18,6 +18,16 @@ import {
   WeaponUsageStat,
 } from '../engine/tacticalRules';
 import { generateMatchReport } from '../engine/aiCoach';
+import { getLatestReleaseInfo } from '../services/githubReleases';
+import {
+  computeProMetrics,
+  detectIsEnglish,
+  renderCombatRadarSvg,
+  renderPubgMinimapSvg,
+  SimplePubgMapTelemetry,
+  SimpleRoundTelemetry,
+  webPortalStyles,
+} from '../web/webTemplates';
 
 const router = Router();
 const MAX_STORED_MATCHES = 20;
@@ -1841,10 +1851,11 @@ router.get('/leaderboard', authenticateToken, async (req: AuthRequest, res: Resp
   }
 });
 
-// GET /api/analyze/public-match/:matchId — Trang xem nhanh Highlight chia sẻ cho bạn bè
+// GET /api/analyze/public-match/:matchId - Public Match Showcase with OpenGraph / Discord Embeds & Telemetry
 router.get('/public-match/:matchId', async (req: Request, res: Response) => {
   try {
     const matchId = String(req.params.matchId || '').trim();
+    const isEn = detectIsEnglish(req);
 
     const [tableRows]: any = await dbPool.query(
       `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -1864,43 +1875,378 @@ router.get('/public-match/:matchId', async (req: Request, res: Response) => {
 
     const match = rows?.[0];
     if (!match) {
-      res.status(404).send('<h2>Không tìm thấy trận đấu hoặc clip chia sẻ này.</h2>');
+      res
+        .status(404)
+        .send(
+          `<!DOCTYPE html><html lang="${isEn ? 'en' : 'vi'}"><body style="background:#090C12;color:#EEF2F6;font-family:sans-serif;padding:48px;text-align:center;"><h2>${
+            isEn
+              ? 'Shared match or highlight clip not found.'
+              : 'Không tìm thấy trận đấu hoặc clip chia sẻ này.'
+          }</h2><p><a href="/" style="color:#38BDF8;">${
+            isEn ? 'Back to TacticalReplayAI' : 'Quay về TacticalReplayAI'
+          }</a></p></body></html>`
+        );
       return;
     }
 
-    const rawPlayerName =
-      match.game_type === 'VALORANT'
-        ? `${match.riot_game_name || 'Player'}#${match.riot_tag_line || ''}`
-        : match.pubg_player_name || match.steam_persona_name || 'PUBG Player';
+    const gameType: 'VALORANT' | 'PUBG' =
+      String(match.game_type || '').toUpperCase() === 'PUBG' ? 'PUBG' : 'VALORANT';
+    const isValo = gameType === 'VALORANT';
+
+    // Load rounds, AI report, optional PUBG 2D map telemetry, and latest release info
+    const [roundRows]: any = await dbPool.query(
+      'SELECT * FROM match_rounds WHERE match_id = ? ORDER BY round_number ASC',
+      [matchId]
+    );
+    const [reportRows]: any = await dbPool.query(
+      'SELECT * FROM match_reports WHERE match_id = ? LIMIT 1',
+      [matchId]
+    );
+
+    let mapTelemetry: SimplePubgMapTelemetry | null = null;
+    if (!isValo) {
+      try {
+        const [telemetryRows]: any = await dbPool.query(
+          'SELECT map_size_cm, telemetry_json FROM match_telemetry WHERE match_id = ? LIMIT 1',
+          [matchId]
+        );
+        if (telemetryRows?.[0]?.telemetry_json) {
+          mapTelemetry = safeParseJson<SimplePubgMapTelemetry | null>(
+            telemetryRows[0].telemetry_json,
+            null
+          );
+          if (mapTelemetry && !mapTelemetry.mapSizeCm && telemetryRows[0].map_size_cm) {
+            mapTelemetry.mapSizeCm = Number(telemetryRows[0].map_size_cm);
+          }
+        }
+      } catch {
+        mapTelemetry = null;
+      }
+    }
+
+    const latest = await getLatestReleaseInfo();
+
+    const formattedRounds: SimpleRoundTelemetry[] = (roundRows || []).map((row: any) => ({
+      roundNumber: Number(row.round_number || 0),
+      result: String(row.round_result || ''),
+      economyType: String(row.economy_type || ''),
+      tacticalStyle: String(row.tactical_style || ''),
+      kills: Number(row.kills || 0),
+      deaths: Number(row.deaths || 0),
+      assists: Number(row.assists || 0),
+      damageDealt: Number(row.damage_dealt || 0),
+      mistakes: safeParseJson<string[]>(row.mistakes_json, []),
+      weaponStats: safeParseJson<WeaponUsageStat[]>(row.weapon_stats_json, []),
+    }));
+
+    const proMetrics = computeProMetrics(formattedRounds, gameType, isEn);
+    const rawReport = reportRows?.[0] || null;
+    const overallScore = rawReport ? Number(rawReport.overall_score || 0) : null;
+    const coachCommentary = rawReport ? String(rawReport.coach_commentary || '').trim() : '';
+    const strengthsSummary = rawReport ? safeParseJson<string[]>(rawReport.strengths_summary, []) : [];
+    const drillsSummary = rawReport ? safeParseJson<string[]>(rawReport.recommended_drills, []) : [];
+
+    const rawPlayerName = isValo
+      ? `${match.riot_game_name || 'Player'}#${match.riot_tag_line || ''}`
+      : match.pubg_player_name || match.steam_persona_name || 'PUBG Player';
 
     const safePlayerName = escapeHtml(rawPlayerName);
-    const safeMapName = escapeHtml(match.map_name);
-    const safeMatchResult = escapeHtml(match.match_result);
-    const safeMode = escapeHtml(match.game_mode || match.game_type);
+    const safeMapName = escapeHtml(match.map_name || gameType);
+    const safeMatchResult = escapeHtml(match.match_result || '');
+    const safeMode = escapeHtml(match.game_mode || gameType);
     const safeScoreSummary = escapeHtml(match.score_summary || '');
     const rawVideoUrl = String(match.cloud_video_url || '').trim();
+    const hasSafeVideo = Boolean(rawVideoUrl && isSafeVideoUrl(rawVideoUrl));
+    const safeVideoUrl = hasSafeVideo ? escapeHtml(rawVideoUrl) : '';
+    const videoMime = rawVideoUrl.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4';
 
-    const videoBlock =
-      rawVideoUrl && isSafeVideoUrl(rawVideoUrl)
-        ? `<video src="${escapeHtml(rawVideoUrl)}" controls autoplay style="width:100%;border-radius:12px;background:#000;margin-top:16px;"></video>`
-        : `<div style="padding:32px;border:1px dashed #334155;border-radius:12px;text-align:center;color:#94a3b8;margin-top:16px;">Trận đấu này chưa tải video lên cloud, chỉ chia sẻ thông số kết quả.</div>`;
+    const ogTitle = `${rawPlayerName} - ${match.map_name || gameType} (${match.match_result || gameType})`;
+    const ogDescriptionParts = [
+      `${gameType} | ${match.game_mode || gameType}`,
+      match.score_summary ? String(match.score_summary) : '',
+      formattedRounds.length > 0
+        ? `KAST ${proMetrics.kastPct}% | ADR ${proMetrics.adr} | HS ${proMetrics.hsPct}% | Impact ${proMetrics.impactRating.toFixed(2)}`
+        : '',
+      overallScore !== null && Number.isFinite(overallScore)
+        ? `AI Coach ${overallScore.toFixed(1)}/10`
+        : '',
+    ].filter(Boolean);
+    const ogDescription = ogDescriptionParts.join(' - ');
+
+    const ogVideoMeta = hasSafeVideo
+      ? `
+  <meta property="og:type" content="video.other" />
+  <meta property="og:video" content="${safeVideoUrl}" />
+  <meta property="og:video:secure_url" content="${safeVideoUrl}" />
+  <meta property="og:video:type" content="${videoMime}" />
+  <meta property="og:video:width" content="1280" />
+  <meta property="og:video:height" content="720" />
+  <meta name="twitter:card" content="player" />`
+      : `
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary" />`;
+
+    const videoBlock = hasSafeVideo
+      ? `<video src="${safeVideoUrl}" controls playsinline preload="metadata" style="width:100%;max-height:540px;border-radius:4px;background:#000;border:1px solid #232B3B;display:block;"></video>`
+      : `<div style="padding:28px 20px;border:1px dashed #334155;border-radius:4px;text-align:center;color:#94A3B8;background:#0A0D12;font-size:13px;">${
+          isEn
+            ? 'Telemetry-only match report (no cloud highlight video attached).'
+            : 'Báo cáo chỉ số trận đấu (chưa đính kèm video highlight lên cloud).'
+        }</div>`;
+
+    const radarSvg =
+      formattedRounds.length > 0 ? renderCombatRadarSvg(proMetrics, isValo, isEn) : '';
+    const pubgMapHtml = !isValo ? renderPubgMinimapSvg(mapTelemetry, String(match.map_name || 'PUBG'), isEn) : '';
+
+    const roundsTableRows = formattedRounds
+      .slice(0, 24)
+      .map((rd) => {
+        const resUp = String(rd.result || '').toUpperCase();
+        const isPos = resUp === 'WIN' || resUp === 'SURVIVED';
+        const badgeColor = isPos ? '#34D399' : '#FB7185';
+        return `
+          <tr>
+            <td class="mono">${isValo ? 'R' : 'P'}${String(rd.roundNumber).padStart(2, '0')}</td>
+            <td style="font-weight:700;color:${badgeColor};font-family:ui-monospace,monospace;font-size:12px;">${escapeHtml(rd.result)}</td>
+            <td class="mono">${rd.kills}/${rd.deaths}/${rd.assists}</td>
+            <td class="mono">${rd.damageDealt}</td>
+            <td class="mono" style="color:#94A3B8;">${escapeHtml(rd.economyType || '-')}</td>
+            <td style="font-size:12px;color:#CBD5E1;">${escapeHtml(rd.tacticalStyle || '-')}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    const playedAtLabel = match.played_at
+      ? new Date(match.played_at).toLocaleString(isEn ? 'en-US' : 'vi-VN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        })
+      : '';
+
+    const themeName = isValo ? 'valorant' : 'pubg';
+    const themeHex = isValo ? '#FF4655' : '#E59A23';
 
     res.send(`<!DOCTYPE html>
-<html lang="vi">
+<html lang="${isEn ? 'en' : 'vi'}" data-theme="${themeName}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${safePlayerName} - ${safeMapName} (${safeMatchResult}) | TacticalReplayAI</title>
+  <title>${escapeHtml(ogTitle)} | TacticalReplayAI</title>
+  <meta name="description" content="${escapeHtml(ogDescription)}" />
+  <meta property="og:site_name" content="TacticalReplayAI" />
+  <meta property="og:title" content="${escapeHtml(ogTitle)}" />
+  <meta property="og:description" content="${escapeHtml(ogDescription)}" />
+  <meta name="theme-color" content="${themeHex}" />
+  ${ogVideoMeta}
+  <style>
+    ${webPortalStyles}
+    .showcase-grid {
+      display: grid;
+      grid-template-columns: ${pubgMapHtml ? '1.1fr 0.9fr' : '1fr'};
+      gap: 18px;
+      margin-top: 20px;
+      align-items: start;
+    }
+    @media (max-width: 860px) {
+      .showcase-grid { grid-template-columns: 1fr; }
+    }
+    .coach-score-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 11px;
+      border-radius: 2px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(229, 154, 35, 0.14);
+      border: 1px solid rgba(229, 154, 35, 0.45);
+      color: #E59A23;
+    }
+    .viral-banner {
+      margin-top: 24px;
+      padding: 20px;
+      border-radius: 4px;
+      background: #10141C;
+      border: 1px solid #232B3B;
+      border-left: 3px solid var(--accent-primary);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+  </style>
 </head>
-<body style="margin:0;background:#020617;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-  <div style="max-width:860px;margin:0 auto;padding:36px 20px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1e293b;padding-bottom:16px;">
-      <strong style="font-size:18px;">TacticalReplay<span style="color:#ff4655;">AI</span></strong>
-      <span style="font-size:12px;color:#34d399;background:rgba(16,185,129,0.12);padding:4px 10px;border-radius:999px;">Shared Match Clip</span>
+<body>
+  <div class="top-ribbon"></div>
+  <div class="container" style="max-width:1020px;">
+    <header>
+      <a class="brand" href="/">
+        <span class="brand-mark">TR</span>
+        <span>TacticalReplay<span class="accent">AI</span></span>
+      </a>
+      <nav>
+        <a href="/demo">${isEn ? 'Web Demo' : 'Dùng thử Web'}</a>
+        <a href="/tools">${isEn ? 'Sens &amp; Crosshair' : 'Đổi Sens &amp; Tâm'}</a>
+        <a href="/download" class="nav-cta">${isEn ? `Download v${escapeHtml(latest.version)}` : `Tải v${escapeHtml(latest.version)}`}</a>
+      </nav>
+    </header>
+
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:16px;">
+      <div>
+        <span class="badge" style="margin-bottom:8px;">${escapeHtml(gameType)} - ${isEn ? 'SHARED MATCH SHOWCASE' : 'TRANG CHIA SẺ TRẬN ĐẤU'}</span>
+        <h1 style="margin:0 0 6px;">${safeMapName} - ${safeMatchResult}</h1>
+        <p style="margin:0;color:#94A3B8;font-size:13.5px;">
+          ${isEn ? 'Player' : 'Người chơi'}: <strong style="color:#EEF2F6;">${safePlayerName}</strong>
+          ${safeMode ? ` | ${safeMode}` : ''}
+          ${safeScoreSummary ? ` | <span class="mono" style="color:${themeHex};">${safeScoreSummary}</span>` : ''}
+          ${playedAtLabel ? ` | ${escapeHtml(playedAtLabel)}` : ''}
+        </p>
+      </div>
+      ${
+        overallScore !== null && Number.isFinite(overallScore)
+          ? `<span class="coach-score-pill">AI COACH ${overallScore.toFixed(1)} / 10</span>`
+          : ''
+      }
     </div>
-    <h1 style="font-size:24px;margin:20px 0 6px;">${safeMapName} • ${safeMatchResult}</h1>
-    <p style="color:#94a3b8;font-size:14px;margin:0;">Người chơi: <strong style="color:#fff;">${safePlayerName}</strong> • ${safeMode} • ${safeScoreSummary}</p>
+
     ${videoBlock}
+
+    ${
+      formattedRounds.length > 0 || coachCommentary || pubgMapHtml
+        ? `
+    <div class="showcase-grid">
+      <div class="card">
+        <span class="feature-tag">${isEn ? 'POST-MATCH TELEMETRY & AI COACH' : 'CHỈ SỐ CHUYÊN SÂU & AI COACH'}</span>
+        ${
+          formattedRounds.length > 0
+            ? `
+          <div class="metrics-strip" style="margin-top:10px;">
+            <div class="metric-box">
+              <span class="metric-label">KAST</span>
+              <span class="metric-val" style="color:#10B981;">${proMetrics.kastPct}%</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">${isValo ? 'ADR' : 'DMG/P'}</span>
+              <span class="metric-val" style="color:#EEF2F6;">${proMetrics.adr}</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">HS%</span>
+              <span class="metric-val" style="color:#38BDF8;">${proMetrics.hsPct}%</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">IMPACT</span>
+              <span class="metric-val" style="color:${themeHex};">${proMetrics.impactRating.toFixed(2)}</span>
+            </div>
+          </div>
+          ${radarSvg}
+        `
+            : ''
+        }
+
+        ${
+          coachCommentary
+            ? `<div style="margin-top:12px;padding:12px;background:#0A0D12;border:1px solid #232B3B;border-radius:3px;">
+                 <div class="mono" style="color:#E59A23;font-size:11px;font-weight:700;margin-bottom:4px;">${
+                   isEn ? 'AI COACH DEBRIEF' : 'NHẬN XÉT TỪ AI COACH'
+                 }</div>
+                 <p style="margin:0;font-size:13px;">${escapeHtml(coachCommentary)}</p>
+               </div>`
+            : ''
+        }
+
+        ${
+          strengthsSummary.length > 0
+            ? `<ul style="margin:12px 0 0;padding-left:18px;">${strengthsSummary
+                .slice(0, 3)
+                .map((s) => `<li style="font-size:12.5px;color:#34D399;">${escapeHtml(s)}</li>`)
+                .join('')}</ul>`
+            : ''
+        }
+
+        ${
+          drillsSummary.length > 0
+            ? `<ul style="margin:8px 0 0;padding-left:18px;">${drillsSummary
+                .slice(0, 2)
+                .map((d) => `<li style="font-size:12.5px;color:#CBD5E1;">${escapeHtml(d)}</li>`)
+                .join('')}</ul>`
+            : ''
+        }
+      </div>
+
+      ${
+        pubgMapHtml
+          ? `<div class="card">
+               <span class="feature-tag" style="color:#E59A23;">${
+                 isEn ? '2D SAFE-ZONE & ROTATION ROUTE' : 'SƠ ĐỒ VÒNG BO & LỘ TRÌNH 2D'
+               }</span>
+               <h3 style="margin:2px 0 10px;">${safeMapName}</h3>
+               ${pubgMapHtml}
+             </div>`
+          : ''
+      }
+    </div>`
+        : ''
+    }
+
+    ${
+      roundsTableRows
+        ? `
+    <div class="card" style="margin-top:18px;overflow-x:auto;">
+      <span class="feature-tag">${
+        isValo
+          ? isEn
+            ? 'ROUND-BY-ROUND BREAKDOWN'
+            : 'DIỄN BIẾN TỪNG ROUND'
+          : isEn
+            ? 'SAFE-ZONE PHASE BREAKDOWN'
+            : 'DIỄN BIẾN TỪNG PHASE'
+      }</span>
+      <table class="api-table">
+        <thead>
+          <tr>
+            <th>${isValo ? 'Round' : 'Phase'}</th>
+            <th>${isEn ? 'Result' : 'Kết quả'}</th>
+            <th>K/D/A</th>
+            <th>DMG</th>
+            <th>${isValo ? (isEn ? 'Economy' : 'Kinh tế') : isEn ? 'Stage' : 'Giai đoạn'}</th>
+            <th>${isEn ? 'Tactical Style' : 'Lối chơi'}</th>
+          </tr>
+        </thead>
+        <tbody>${roundsTableRows}</tbody>
+      </table>
+    </div>`
+        : ''
+    }
+
+    <div class="viral-banner">
+      <div>
+        <strong style="font-size:16px;color:#EEF2F6;display:block;">
+          ${
+            isEn
+              ? 'Record, Analyze &amp; Share Your Own Matches Free'
+              : 'Tự động lưu Highlight, phân tích AI Coach &amp; chia sẻ trận đấu miễn phí'
+          }
+        </strong>
+        <span style="font-size:13px;color:#94A3B8;">
+          ${
+            isEn
+              ? `TacticalReplayAI v${escapeHtml(latest.version)} for Windows (VALORANT &amp; PUBG)`
+              : `TacticalReplayAI v${escapeHtml(latest.version)} cho Windows (VALORANT &amp; PUBG)`
+          }
+        </span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <a class="btn-primary" href="/download">${isEn ? 'Download for Windows' : 'Tải về Windows'}</a>
+        <a class="btn-secondary" href="/demo">${isEn ? 'Try Web Demo' : 'Dùng thử Web'}</a>
+      </div>
+    </div>
+
+    <footer>
+      <p>TacticalReplayAI isn't endorsed by Riot Games or KRAFTON. Riot Games, VALORANT, and PUBG are trademarks of their respective owners.</p>
+    </footer>
   </div>
 </body>
 </html>`);
